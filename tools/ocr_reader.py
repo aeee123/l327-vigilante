@@ -103,7 +103,7 @@ def extract(data, kind):
 
 
 def api(base, token, path, payload=None):
-    request = urllib.request.Request(base + path, data=json.dumps(payload).encode() if payload is not None else None, headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    request = urllib.request.Request(base + path, data=json.dumps(payload).encode() if payload is not None else None, headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "User-Agent": "L327-Vigilante-OCR/2.0", "Accept": "application/json"})
     # No redirect may forward the administration secret to a different host.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):

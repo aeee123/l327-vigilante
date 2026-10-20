@@ -10,6 +10,12 @@ spec.loader.exec_module(ocr)
 
 
 class ReaderTests(unittest.TestCase):
+    @patch.object(ocr.urllib.request, 'build_opener')
+    def test_api_identifies_reader_to_cloudflare(self, opener):
+        opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{"items": []}'
+        self.assertEqual(ocr.api('https://bot.example', 'fake-token', '/media'), {'items': []})
+        request = opener.return_value.open.call_args.args[0]
+        self.assertEqual(request.get_header('User-agent'), 'L327-Vigilante-OCR/2.0')
     def test_only_allowed_public_hosts(self):
         for url in ['http://pbs.twimg.com/a.jpg', 'https://127.0.0.1/a', 'https://pbs.twimg.com.evil.example/a', 'https://user:pass@pbs.twimg.com/a']:
             with self.assertRaises(ValueError):
