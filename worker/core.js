@@ -1,6 +1,10 @@
 export const DAY = 86400000;
 export const normalize = (s = '') => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 export const CIRCUIT = /\b(?:sis\s*[-_]?\s*)?l\s*[-_]?\s*327\b|\b(?:linea|circuito)\s*327\b/i;
+export function unrelatedPost(text) {
+  const t = normalize(text);
+  return !CIRCUIT.test(t) && !/corte|interrupcion|mantenimiento|apagon|sin luz|sin energia|falla|alivio de carga/.test(t) && /cancer|octubre rosa|deteccion temprana salva vidas/.test(t);
+}
 const MONTHS = 'enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre'.split(' ');
 const DATE_RE = /\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+(?:de(?:l)?\s+)?(20\d{2}))?\b/g;
 const EVENT = /sin (?:luz|energia|suministro|servicio electrico)|apag[oó]n|interrupcion|corte(?:s)? (?:de )?(?:luz|energia|electrico)|mantenimiento|alivio de carga|racionamiento|falla|deficit de generacion/;

@@ -38,6 +38,10 @@ def download(url, depth=0):
         raise ValueError("demasiados enlaces de documento")
     public_url(url)
     parsed = urllib.parse.urlsplit(url)
+    if parsed.hostname == "pbs.twimg.com":
+        query = dict(urllib.parse.parse_qsl(parsed.query))
+        query["name"] = "orig"
+        url = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
     if parsed.hostname in {"drive.google.com", "docs.google.com"} and "/file/d/" in parsed.path:
         file_id = parsed.path.split("/file/d/", 1)[1].split("/", 1)[0]
         url = "https://drive.google.com/uc?export=download&id=" + urllib.parse.quote(file_id)
@@ -63,8 +67,8 @@ def download(url, depth=0):
     raise ValueError("contenido no es imagen/PDF; revisar enlace manualmente")
 
 
-def recognize(path):
-    result = subprocess.run(["tesseract", str(path), "stdout", "-l", "spa+eng", "--psm", "11", "tsv"], capture_output=True, text=True, encoding="utf-8", timeout=60, check=True)
+def recognize(path, mode="11"):
+    result = subprocess.run(["tesseract", str(path), "stdout", "-l", "spa+eng", "--psm", mode, "tsv"], capture_output=True, text=True, encoding="utf-8", timeout=60, check=True)
     lines = {}
     scores = []
     for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t", quoting=csv.QUOTE_NONE):
@@ -77,7 +81,12 @@ def recognize(path):
         if score >= 0:
             scores.append(score)
     text = "\n".join(" ".join(words) for words in lines.values())
-    return {"text": text, "confidence": round(sum(scores) / len(scores), 1) if scores else 0}
+    unit = {"text": text, "confidence": round(sum(scores) / len(scores), 1) if scores else 0}
+    if mode == "11" and unit["confidence"] < 55:
+        alternative = recognize(path, "6")
+        if alternative["confidence"] > unit["confidence"]:
+            return alternative
+    return unit
 
 
 def extract(data, kind):

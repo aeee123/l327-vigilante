@@ -1,4 +1,4 @@
-import { DAY, normalize, classify, digest, articleLinks, article, rss, tweets, message, safeUrl } from './core.js';
+import { DAY, normalize, classify, digest, articleLinks, article, rss, tweets, message, safeUrl, unrelatedPost } from './core.js';
 
 const UA = 'L327-Vigilante/2.0 (+monitor de avisos publicos ENEE)';
 const MAX_BODY = 2 * 1024 * 1024;
@@ -72,7 +72,7 @@ export class Vigilante {
     const pub = Date.parse(c.published || '');
     const validDate = Number.isFinite(pub) && pub <= Date.now() + 3600000 && pub >= Date.now() - 7 * DAY;
     // PDFs/images are separate units; never attach another circuit's text to them.
-    if ((validDate || classify(c).relevant) && c.media?.length) {
+    if (!unrelatedPost(c.text) && (validDate || classify(c).relevant) && c.media?.length) {
       for (const m of c.media) {
         const id = await digest(c.url + '\n' + m.url);
         if (!state.media[id]) state.media[id] = { id, ...m, parent: { url: c.url, title: c.title, published: c.published, source: c.source }, created: Date.now(), done: false };
@@ -156,6 +156,9 @@ export class Vigilante {
   }
   prune(state) {
     const now = Date.now();
+    for (const m of Object.values(state.media)) if (!m.done && unrelatedPost(m.parent.title)) {
+      m.done = true; m.processed = now; m.result = { accepted: false, reason: 'publicación de salud sin aviso eléctrico' }; delete m.error;
+    }
     for (const [k, v] of Object.entries(state.sent)) if (now - v.at > 90 * DAY) delete state.sent[k];
     for (const [k, v] of Object.entries(state.media)) if (now - v.created > 8 * DAY) delete state.media[k];
     const articles = Object.entries(state.articles).sort((a, b) => b[1].checked - a[1].checked);

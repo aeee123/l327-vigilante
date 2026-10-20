@@ -77,6 +77,13 @@ test('fuentes rotas no se presentan como sanas', async () => {
   state.sources['x-cnd'] = {failures:3,error:'HTTP 403'};
   assert.match(bot.health(state).join(' '),/HTTP 403/);
 });
+test('campañas de salud sin aviso eléctrico no entran en la cola OCR', async () => {
+  const {bot}=instance();const state=await bot.load();
+  await bot.consider(state,{...candidate(),text:'Octubre Rosa: lucha contra el cáncer de mama.',media:[{url:'https://pbs.twimg.com/a.jpg',type:'image'}]});
+  assert.equal(Object.keys(state.media).length,0);
+  await bot.consider(state,{...candidate(),text:'Octubre Rosa: corte de energía en L-327.',media:[{url:'https://pbs.twimg.com/b.jpg',type:'image'}]});
+  assert.equal(Object.keys(state.media).length,1);
+});
 test('las advertencias técnicas no se envían al chat por defecto', async () => {
   const { bot } = instance(); const state = await bot.load();
   state.sources['rss'] = {failures:3,error:'HTTP 503'};
