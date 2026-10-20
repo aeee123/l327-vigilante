@@ -1,0 +1,4 @@
+# Copiar a worker/.dev.vars SOLO para pruebas locales. No subir secretos al repositorio.
+TELEGRAM_TOKEN=
+TELEGRAM_CHAT_ID=
+ADMIN_TOKEN=

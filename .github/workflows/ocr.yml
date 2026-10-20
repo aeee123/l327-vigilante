@@ -1,0 +1,24 @@
+name: L327 lectura gratuita de imágenes y PDF
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '2-57/5 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: l327-ocr
+  cancel-in-progress: false
+jobs:
+  ocr:
+    if: vars.ENABLE_OCR == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar lector gratuito
+        run: sudo apt-get update -qq && sudo apt-get install -y tesseract-ocr tesseract-ocr-spa poppler-utils
+      - name: Procesar avisos pendientes
+        env:
+          BOT_URL: ${{ secrets.BOT_URL }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: python3 tools/ocr_reader.py

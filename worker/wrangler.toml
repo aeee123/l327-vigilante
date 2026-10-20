@@ -1,0 +1,19 @@
+name = "l327-vigilante"
+main = "l327-worker.js"
+compatibility_date = "2026-10-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[durable_objects.bindings]]
+name = "VIGILANTE"
+class_name = "Vigilante"
+
+[[migrations]]
+tag = "v1-vigilante-sqlite"
+new_sqlite_classes = ["Vigilante"]
+
+# Preserve the existing KV namespace; v2 uses strongly consistent SQLite state.
+[[kv_namespaces]]
+binding = "VISTOS"
+id = "e8a31a1f8ac344188f771b3831d4b7ab"

@@ -1,4 +1,4 @@
-﻿# Bot de cortes de energía L-327 / SIS-L327
+# Bot de cortes de energía L-327 / SIS-L327
 
 Versión 2. Revisión y corrección: 20 de octubre de 2026.
 
