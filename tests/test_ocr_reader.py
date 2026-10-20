@@ -10,6 +10,15 @@ spec.loader.exec_module(ocr)
 
 
 class ReaderTests(unittest.TestCase):
+    @patch.object(ocr.time, 'sleep')
+    @patch.object(ocr.urllib.request, 'build_opener')
+    def test_api_retries_when_collection_is_busy(self, opener, sleep):
+        response = opener.return_value.open.return_value
+        response.__enter__.return_value.read.return_value = b'{"accepted": true}'
+        opener.return_value.open.side_effect = [ocr.urllib.error.HTTPError('https://bot.example/ingest',409,'busy',{},None),response]
+        self.assertTrue(ocr.api('https://bot.example','fake-token','/ingest',{'id':'test'})['accepted'])
+        self.assertEqual(opener.return_value.open.call_count,2)
+        sleep.assert_called_once()
     @patch.object(ocr.urllib.request, 'build_opener')
     def test_api_identifies_reader_to_cloudflare(self, opener):
         opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{"items": []}'

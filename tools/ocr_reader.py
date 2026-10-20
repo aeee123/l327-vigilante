@@ -117,8 +117,16 @@ def api(base, token, path, payload=None):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
-    with urllib.request.build_opener(NoRedirect()).open(request, timeout=50) as response:
-        return json.load(response)
+    opener = urllib.request.build_opener(NoRedirect())
+    for attempt in range(5):
+        try:
+            with opener.open(request, timeout=50) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code not in {409, 429, 500, 502, 503, 504} or attempt == 4:
+                raise
+            error.close()
+            time.sleep(min(10, 2 ** (attempt + 1)))
 
 
 def main():

@@ -50,7 +50,7 @@ ADMIN_TOKEN debe ser un valor aleatorio largo (por ejemplo, 32 bytes aleatorios)
 
 El archivo `wrangler.toml` incluye la creación del Durable Object con SQLite, disponible en Cloudflare Free. Conserva el binding KV anterior para no borrar el historial antiguo, aunque la versión nueva no lo usa para coordinar envíos. No hay migración de hashes antiguos: en el primer arranque puede repetirse un aviso reciente que la versión anterior ya hubiera enviado. La deduplicación nueva guarda huellas de textos completos durante noventa días; no identifica como iguales todas las redacciones diferentes del mismo evento.
 
-Versión publicada el 20 de octubre de 2026 en https://l327-vigilante.l327bot.workers.dev, con cron cada minuto y prueba de Telegram aceptada. El OCR de GitHub todavía requiere conectar la cuenta, publicar este repositorio y configurar sus secretos.
+Versión publicada el 20 de octubre de 2026 en https://l327-vigilante.l327bot.workers.dev, con cron cada minuto y prueba de Telegram aceptada. El OCR de GitHub está habilitado en este repositorio, con secretos configurados y ejecución programada cada cinco minutos. Se comprobó su comunicación con Cloudflare y la lectura de imágenes reales.
 
 ### Comprobar el bot
 
@@ -125,7 +125,7 @@ python -m unittest discover -s tests -p 'test_*.py'
 npm run check
 ```
 
-Incluye pruebas de regresión de fechas, circuito, antigüedad, parser X, contenido de artículos, autorización, reintentos, 429, persistencia, concurrencia y separación de páginas OCR. La prueba de runtime usa el motor local de Cloudflare con SQLite. Las pruebas Python verifican el lector y sus controles con procesos simulados; Tesseract/Poppler no estaban instalados en el equipo de auditoría, por lo que falta validar OCR real en el runner donde se active. No se enviaron mensajes reales durante las pruebas.
+Incluye pruebas de regresión de fechas, circuito, antigüedad, parser X, contenido de artículos, autorización, reintentos, 429, persistencia, concurrencia y separación de páginas OCR. La prueba de runtime usa el motor local de Cloudflare con SQLite. Las pruebas Python verifican el lector y sus controles con procesos simulados; Tesseract/Poppler no estaban instalados en el equipo de auditoría, y el OCR real se validó posteriormente en el runner de GitHub. No se enviaron mensajes reales durante las pruebas.
 
 ## Documentación consultada
 
@@ -138,4 +138,5 @@ Incluye pruebas de regresión de fechas, circuito, antigüedad, parser X, conten
 - Tesseract: https://github.com/tesseract-ocr/tesseract
 - RSSHub, implementación X: https://github.com/DIYgod/RSSHub/blob/master/lib/routes/twitter/api/web-api/utils.ts
 - Telegram, límites de envío: https://core.telegram.org/bots/faq
+
 
