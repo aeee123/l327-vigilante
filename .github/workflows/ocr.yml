@@ -1,6 +1,11 @@
 name: L327 lectura gratuita de imágenes y PDF
 on:
   workflow_dispatch:
+    inputs:
+      self_test:
+        description: Probar OCR y filtro con imágenes simuladas, sin enviar avisos ficticios
+        type: boolean
+        default: false
   schedule:
     - cron: '2-57/5 * * * *'
 permissions:
@@ -16,7 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Instalar lector gratuito
-        run: sudo apt-get update -qq && sudo apt-get install -y tesseract-ocr tesseract-ocr-spa poppler-utils
+        run: sudo apt-get update -qq && sudo apt-get install -y tesseract-ocr tesseract-ocr-spa poppler-utils python3-pil
+      - name: Probar OCR y filtro juntos
+        if: github.event_name == 'workflow_dispatch' && inputs.self_test
+        run: python3 tests/ocr_integration.py
       - name: Procesar avisos pendientes
         env:
           BOT_URL: ${{ secrets.BOT_URL }}
