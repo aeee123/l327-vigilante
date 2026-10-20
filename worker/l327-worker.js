@@ -1,4 +1,4 @@
-import { DAY, normalize, classify, digest, articleLinks, article, rss, tweets, message, safeUrl, unrelatedPost } from './core.js';
+import { DAY, normalize, classify, digest, articleLinks, article, tweets, message, safeUrl, unrelatedPost } from './core.js';
 
 const UA = 'L327-Vigilante/2.0 (+monitor de avisos publicos ENEE)';
 const MAX_BODY = 2 * 1024 * 1024;
@@ -7,7 +7,6 @@ export const SOURCES = [
   { id: 'enee-2', type: 'html', url: 'https://www.eneeutcd.hn/es/inoticias/listar/G2/249/2/mantenimientos-programados/', interval: 300000 },
   { id: 'x-cnd', type: 'x', handle: 'CNDHonduras', url: 'https://x.com/CNDHonduras', interval: 60000 },
   { id: 'x-enee', type: 'x', handle: 'eneehnoficial', url: 'https://x.com/eneehnoficial', interval: 60000 },
-  { id: 'rss', type: 'rss', url: 'https://news.google.com/rss/search?q=%22L-327%22+OR+%22SIS-L327%22+OR+%22L327%22+energia+when:7d&hl=es-419&gl=HN&ceid=HN:es', interval: 300000 },
 ];
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 const blank = () => ({ version: 2, sent: {}, queue: {}, media: {}, sources: {}, articles: {}, warnings: {}, lastRun: 0, telegram: {} });
@@ -58,7 +57,12 @@ export async function sendTelegram(env, text) {
 }
 export class Vigilante {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.busy = false; }
-  async load() { return (await this.ctx.storage.get('state-v2')) || blank(); }
+  async load() {
+    const state = (await this.ctx.storage.get('state-v2')) || blank();
+    const active = new Set(SOURCES.map(s => s.id));
+    for (const id of Object.keys(state.sources)) if (!active.has(id)) delete state.sources[id];
+    return state;
+  }
   async save(state) { await this.ctx.storage.put('state-v2', state); }
   async enqueue(state, candidate) {
     const result = classify(candidate);
@@ -100,9 +104,6 @@ export class Vigilante {
         } else if (source.type === 'x') {
           candidates = tweets(response.text, source.handle);
           if (!candidates.length) throw Error('X no entregó publicaciones legibles');
-        } else {
-          if (!/<rss\b|<feed\b/i.test(response.text)) throw Error('RSS inválido');
-          candidates = rss(response.text);
         }
         for (const c of candidates) await this.consider(state, c);
         state.sources[source.id] = { checked: now, success: now, etag: response.etag, modified: response.modified, count: candidates.length, failures: 0, error: null, newest: candidates[0]?.published || null };

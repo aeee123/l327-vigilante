@@ -6,7 +6,7 @@ El bot busca avisos que mencionen explícitamente L-327, L327, SIS-L327 o línea
 
 ## Qué cambió
 
-- Revisión programada cada minuto para ENEE y las dos cuentas de X; RSS cada cinco minutos. Se consultan hasta cuatro artículos por ciclo con rotación.
+- Revisión programada cada minuto para la primera página de ENEE y las dos cuentas de X; segunda página de ENEE cada cinco minutos. Google News fue retirado. Se consultan hasta cuatro artículos por ciclo con rotación.
 - Extracción del artículo completo, su fecha de publicación y sus imágenes/PDF. Se eliminó la mezcla con preguntas frecuentes, menús y pies de página.
 - X se lee como fuente experimental. Se decodifican objetos JSON sin ejecutar código remoto; texto, comillas, autor, ID y fotos se obtienen de la misma publicación. No se adivina el ID por cercanía de horario.
 - Fechas explícitas con día/mes/año, fechas numéricas, cambio de año acotado y rechazo de avisos vencidos. Ventana de publicación de siete días, o evento futuro de hasta treinta días. Reportes de interrupción sin fecha de evento: hasta veinticuatro horas.
@@ -100,7 +100,6 @@ El lector acepta solo hosts explícitos, HTTPS y destinos públicos; no reenvía
 | Cloudflare Worker + Durable Object SQLite | Plan gratuito dentro de sus cuotas; revisión por minuto, persistencia y coordinación | No asegura que las fuentes publiquen contenido nuevo o completo |
 | Web oficial ENEE | Sin API de pago; fuente primaria de mantenimiento | La lista consultada parecía atrasada; parte del contenido está en imágenes/documentos |
 | Scraping X actual | Sin API de pago; conserva publicaciones y fotos cuando la respuesta las incluye | Bloqueos, contenido parcial y cambios de estructura; siempre experimental |
-| Google News RSS | Respaldo gratuito por código exacto del circuito | Depende de indexación; no sirve como señal inmediata garantizada |
 | Tesseract/Poppler en equipo propio | Software gratuito; puede ejecutarse cada minuto | Equipo e internet disponibles; OCR puede equivocarse |
 | Tesseract/Poppler en Actions público | Runner estándar gratuito | Cinco minutos o más; atrasos e inactividad; exige habilitación |
 | RSSHub autohospedado para X | Software abierto, adaptable como fuente futura | Requiere servidor y normalmente sesión/cookie; mantenimiento y fallos documentados. No se añadió un intermediario público no verificado |
@@ -138,5 +137,6 @@ Incluye pruebas de regresión de fechas, circuito, antigüedad, parser X, conten
 - Tesseract: https://github.com/tesseract-ocr/tesseract
 - RSSHub, implementación X: https://github.com/DIYgod/RSSHub/blob/master/lib/routes/twitter/api/web-api/utils.ts
 - Telegram, límites de envío: https://core.telegram.org/bots/faq
+
 
 

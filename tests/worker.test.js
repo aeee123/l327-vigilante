@@ -86,7 +86,7 @@ test('campañas de salud sin aviso eléctrico no entran en la cola OCR', async (
 });
 test('las advertencias técnicas no se envían al chat por defecto', async () => {
   const { bot } = instance(); const state = await bot.load();
-  state.sources['rss'] = {failures:3,error:'HTTP 503'};
+  state.sources['enee-1'] = {failures:3,error:'HTTP 503'};
   state.queue['health-old']={candidate:{system:'Advertencia técnica'},created:Date.now(),attempts:0,next:0};
   bot.collect=async()=>{};
   const result=await bot.run(state);
@@ -114,7 +114,7 @@ test('recolección completa guarda foto de X, envía una vez y conserva la dedup
     if (url.includes('api.telegram.org')) {sends++;return Response.json({ok:true,result:{message_id:10}});}
     if (url.includes('x.com/CNDHonduras')) return new Response(x);
     if (url.includes('x.com/eneehnoficial')) return new Response('<html>Sin datos</html>');
-    if (url.includes('news.google.com')) return new Response('<rss><channel></channel></rss>');
+    assert.equal(url.includes('news.google.com'),false,'Google News no debe consultarse');
     if (url.includes('/listar/')) return new Response('<a href="/es/mantenimiento-NT123">Aviso de mantenimiento programado</a>');
     return new Response('<main><p>Mantenimiento fuera del circuito L-328</p></main>');
   });
