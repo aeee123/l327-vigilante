@@ -75,11 +75,16 @@ export class Vigilante {
   async consider(state, c) {
     const pub = Date.parse(c.published || '');
     const validDate = Number.isFinite(pub) && pub <= Date.now() + 3600000 && pub >= Date.now() - 7 * DAY;
+    const unrelated = unrelatedPost(c.text);
+    for (const media of c.media || []) {
+      const id = await digest(c.url + '\n' + media.url);
+      if (state.media[id]) state.media[id].parent.unrelated = unrelated;
+    }
     // PDFs/images are separate units; never attach another circuit's text to them.
-    if (!unrelatedPost(c.text) && (validDate || classify(c).relevant) && c.media?.length) {
+    if (!unrelated && (validDate || classify(c).relevant) && c.media?.length) {
       for (const m of c.media) {
         const id = await digest(c.url + '\n' + m.url);
-        if (!state.media[id]) state.media[id] = { id, ...m, parent: { url: c.url, title: c.title, published: c.published, source: c.source }, created: Date.now(), done: false };
+        if (!state.media[id]) state.media[id] = { id, ...m, parent: { url: c.url, title: c.title, published: c.published, source: c.source, unrelated: false }, created: Date.now(), done: false };
       }
     }
     return this.enqueue(state, c);
@@ -157,8 +162,8 @@ export class Vigilante {
   }
   prune(state) {
     const now = Date.now();
-    for (const m of Object.values(state.media)) if (!m.done && unrelatedPost(m.parent.title)) {
-      m.done = true; m.processed = now; m.result = { accepted: false, reason: 'publicación de salud sin aviso eléctrico' }; delete m.error;
+    for (const m of Object.values(state.media)) if (!m.done && (m.parent.unrelated === true || (m.parent.unrelated === undefined && unrelatedPost(m.parent.title)))) {
+      m.done = true; m.processed = now; m.reviewRequired = false; m.result = { accepted: false, reason: 'publicación institucional sin aviso de corte eléctrico' }; delete m.error;
     }
     for (const [k, v] of Object.entries(state.sent)) if (now - v.at > 90 * DAY) delete state.sent[k];
     for (const [k, v] of Object.entries(state.media)) if (now - v.created > 8 * DAY) delete state.media[k];
@@ -218,8 +223,8 @@ export class Vigilante {
         if (data.error) { m.error = String(data.error).slice(0, 120); m.attempts = (m.attempts || 0) + 1; await this.save(state); return json({ accepted: false, reason: 'OCR pendiente' }); }
         // No title concatenation: a broad weekly heading must not supply another image's circuit/date.
         if (!units.length || units.every(u => u.confidence < 55 || u.text.trim().length < 10)) {
-          m.error = 'OCR vacío o de baja confianza; requiere revisión'; m.attempts = (m.attempts || 0) + 1;
-          await this.save(state); return json({ accepted: false, reason: m.error });
+          m.error = 'OCR vacío o de baja confianza; requiere revisión'; m.reviewRequired = true; m.attempts = (m.attempts || 0) + 1;
+          await this.save(state); return json({ accepted: false, needs_review: true, reason: m.error });
         }
         const results = [];
         let unreadable = 0;
@@ -228,7 +233,8 @@ export class Vigilante {
           results.push(await this.enqueue(state, { ...m.parent, text: u.text, ocr: true, media: [] }));
         }
         const result = { accepted: results.some(r => r.accepted), pages: results };
-        if (unreadable) { m.error = `OCR parcial: ${unreadable} páginas requieren revisión`; m.attempts = (m.attempts || 0) + 1; result.reason = m.error; }
+        if (unreadable) { m.error = `OCR parcial: ${unreadable} páginas requieren revisión`; m.attempts = (m.attempts || 0) + 1; result.reason = m.error; result.needs_review = true; }
+        m.reviewRequired = unreadable > 0;
         m.done = unreadable === 0; m.result = result; m.processed = Date.now();
         await this.save(state);
         await this.deliver(state);

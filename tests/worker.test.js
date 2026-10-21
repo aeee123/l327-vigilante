@@ -70,7 +70,8 @@ test('OCR con poca confianza queda pendiente para revisión', async () => {
   const { bot } = instance(); const state = await bot.load();
   state.media.a = {id:'a',created:Date.now(),parent:candidate()}; await bot.save(state);
   const response = await bot.fetch(new Request('https://internal/ingest',{method:'POST',body:JSON.stringify({id:'a',units:[{text:'L-327 corte de energía',confidence:15}]})}));
-  assert.match((await response.json()).reason,/baja confianza/); assert.equal((await bot.load()).media.a.done, undefined);
+  const result = await response.json();
+  assert.match(result.reason,/baja confianza/); assert.equal(result.needs_review,true); assert.equal((await bot.load()).media.a.done, undefined);
 });
 test('fuentes rotas no se presentan como sanas', async () => {
   const { bot } = instance(); const state = await bot.load();
@@ -83,6 +84,21 @@ test('campañas de salud sin aviso eléctrico no entran en la cola OCR', async (
   assert.equal(Object.keys(state.media).length,0);
   await bot.consider(state,{...candidate(),text:'Octubre Rosa: corte de energía en L-327.',media:[{url:'https://pbs.twimg.com/b.jpg',type:'image'}]});
   assert.equal(Object.keys(state.media).length,1);
+});
+test('fotos institucionales se retiran sin declararlas leídas por OCR', async () => {
+  const {bot}=instance();const state=await bot.load();
+  for (const [id,title] of [['award','Entrega de medalla y cooperación internacional'],['training','Prevención y seguridad laboral: capacitación']]) {
+    state.media[id]={parent:{title},created:Date.now(),done:false,error:'OCR vacío'};
+  }
+  bot.prune(state);
+  assert.equal(state.media.award.done,true);assert.equal(state.media.training.done,true);
+  assert.match(state.media.award.result.reason,/institucional/);assert.equal(state.media.award.error,undefined);
+});
+test('un aviso de circuito en el cuerpo conserva su OCR pese al título institucional', async () => {
+  const {bot}=instance();const state=await bot.load();
+  await bot.consider(state,{...candidate(),title:'Capacitación',text:'Capacitación. '+ 'Información '.repeat(30)+' L-327 corte de energía.',media:[{url:'https://pbs.twimg.com/a.jpg',type:'image'}]});
+  bot.prune(state);
+  assert.equal(Object.values(state.media).length,1);assert.equal(Object.values(state.media)[0].done,false);
 });
 test('las advertencias técnicas no se envían al chat por defecto', async () => {
   const { bot } = instance(); const state = await bot.load();

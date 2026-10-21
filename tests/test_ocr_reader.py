@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import subprocess
 import unittest
 from pathlib import Path
@@ -10,6 +11,26 @@ spec.loader.exec_module(ocr)
 
 
 class ReaderTests(unittest.TestCase):
+    @patch.dict(ocr.os.environ, {'BOT_URL':'https://bot.example','ADMIN_TOKEN':'fake-token','GITHUB_STEP_SUMMARY':''})
+    @patch.object(ocr.time, 'sleep')
+    @patch.object(ocr, 'extract', return_value=[{'text':'ilegible','confidence':10}])
+    @patch.object(ocr, 'download', return_value=(b'image','image'))
+    @patch.object(ocr, 'api')
+    def test_low_confidence_remains_review_without_failing_execution(self, api, download, extract, sleep):
+        api.side_effect = [{'items':[{'id':'test','url':'https://pbs.twimg.com/a.jpg'}]}, {'accepted':False,'needs_review':True,'reason':'OCR vacío'}]
+        with patch('sys.stdout', new=io.StringIO()) as output:
+            ocr.main()
+        self.assertIn('Requieren revisión: 1', output.getvalue())
+        self.assertIn('Fallos de ejecución: 0', output.getvalue())
+
+    @patch.dict(ocr.os.environ, {'BOT_URL':'https://bot.example','ADMIN_TOKEN':'fake-token','GITHUB_STEP_SUMMARY':''})
+    @patch.object(ocr.time, 'sleep')
+    @patch.object(ocr, 'download', side_effect=ocr.urllib.error.URLError('network'))
+    @patch.object(ocr, 'api')
+    def test_transport_failure_still_fails_execution(self, api, download, sleep):
+        api.side_effect = [{'items':[{'id':'test','url':'https://pbs.twimg.com/a.jpg'}]}, {'accepted':False}]
+        with patch('sys.stdout', new=io.StringIO()), self.assertRaises(SystemExit):
+            ocr.main()
     @patch.object(ocr.time, 'sleep')
     @patch.object(ocr.urllib.request, 'build_opener')
     def test_api_retries_when_collection_is_busy(self, opener, sleep):

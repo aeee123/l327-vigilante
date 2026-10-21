@@ -139,13 +139,14 @@ def main():
         raise ValueError("falta ADMIN_TOKEN")
     items = api(base, token, "/media")["items"]
     failures = 0
+    reviews = 0
     for item in items:
         try:
             data, kind = download(item["url"])
             units = extract(data, kind)
             result = api(base, token, "/ingest", {"id": item["id"], "units": units})
-            if result.get("reason", "").startswith("OCR"):
-                failures += 1
+            if result.get("needs_review") or result.get("reason", "").startswith("OCR"):
+                reviews += 1
             print(item["id"][:12], json.dumps(result, ensure_ascii=False))
         except Exception as error:
             failures += 1
@@ -154,8 +155,13 @@ def main():
             print(item["id"][:12], "OCR pendiente:", category)
             api(base, token, "/ingest", {"id": item["id"], "error": category})
         time.sleep(1.2)
+    summary = f"Documentos procesados: {len(items)}. Requieren revisión: {reviews}. Fallos de ejecución: {failures}."
+    print(summary)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as report:
+            report.write("## Resultado del lector OCR\n\n" + summary + "\n\nLas imágenes ilegibles permanecen pendientes; no se aceptan como avisos ni se declaran leídas correctamente.\n")
     if failures:
-        raise SystemExit(f"{failures} documentos pendientes; consultar el estado protegido del bot")
+        raise SystemExit(f"{failures} fallos de ejecución; consultar el estado protegido del bot")
 
 
 if __name__ == "__main__":
