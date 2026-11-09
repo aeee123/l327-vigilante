@@ -137,10 +137,15 @@ def main():
         raise ValueError("BOT_URL debe ser el origen HTTPS del Worker")
     if not token:
         raise ValueError("falta ADMIN_TOKEN")
-    items = api(base, token, "/media")["items"]
+    items = api(base, token, "/media?limit=48")["items"]
+    deadline = time.monotonic() + 360
+    processed = 0
     failures = 0
     reviews = 0
     for item in items:
+        if time.monotonic() >= deadline:
+            break
+        processed += 1
         try:
             data, kind = download(item["url"])
             units = extract(data, kind)
@@ -155,7 +160,7 @@ def main():
             print(item["id"][:12], "OCR pendiente:", category)
             api(base, token, "/ingest", {"id": item["id"], "error": category})
         time.sleep(1.2)
-    summary = f"Documentos procesados: {len(items)}. Requieren revisión: {reviews}. Fallos de ejecución: {failures}."
+    summary = f"Documentos procesados: {processed} de {len(items)}. Requieren revisión: {reviews}. Fallos de ejecución: {failures}."
     print(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as report:

@@ -11,6 +11,7 @@ export const SOURCES = [
 ];
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 const blank = () => ({ version: 2, sent: {}, queue: {}, media: {}, sources: {}, articles: {}, warnings: {}, lastRun: 0, telegram: {} });
+const canReadMedia = m => !m.done && m.parent.unrelated !== true && (m.attempts || 0) < 3;
 export async function readText(response, max = MAX_BODY) {
   const reader = response.body?.getReader();
   if (!reader) return '';
@@ -158,10 +159,31 @@ export class Vigilante {
       if (s?.failures >= 3) issues.push(`${source.id}: ${s.error}`);
       if (source.type === 'x' && s?.newest && Date.now() - Date.parse(s.newest) > 3 * DAY) issues.push(`${source.id}: la publicación visible más reciente tiene más de 72 horas; la frescura de X no está verificada.`);
     }
-    const pending = Object.values(state.media).filter(m => !m.done);
+    const pending = Object.values(state.media).filter(canReadMedia);
     if (pending.some(m => Date.now() - m.created > 15 * 60000)) issues.push('Hay imágenes/PDF pendientes: el lector OCR no está completando los avisos. Consultar /media y /status.');
     if (Object.values(state.articles).some(a => a.error)) issues.push('Hay artículos oficiales que no se pudieron descargar.');
     return issues;
+  }
+  async dispatchOcr(state) {
+    const token = this.env.OCR_DISPATCH_TOKEN;
+    const now = Date.now();
+    if (!token || !Object.values(state.media).some(canReadMedia)) return;
+    const lastActivity = Math.max(state.ocrDispatch?.attempted || 0, Date.parse(state.ocrLastSeen || '') || 0);
+    if (now - lastActivity < 10 * 60000) return;
+    state.ocrDispatch = { attempted: now, error: null };
+    await this.save(state);
+    try {
+      const response = await fetch('https://api.github.com/repos/aeee123/l327-vigilante/actions/workflows/ocr.yml/dispatches', {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
+        headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': UA },
+        body: JSON.stringify({ ref: 'main' }),
+      });
+      if (!response.ok) state.ocrDispatch.error = `GitHub HTTP ${response.status}`;
+      await response.body?.cancel();
+    } catch {
+      state.ocrDispatch.error = 'no se pudo iniciar el lector en GitHub';
+    }
+    await this.save(state);
   }
   async deliver(state) {
     const now = Date.now();
@@ -197,6 +219,7 @@ export class Vigilante {
     await this.save(state);
     try { await this.collect(state); state.lastError = null; }
     catch { state.lastError = 'falló la recolección; revisar estado de fuentes'; }
+    this.prune(state);
     const issues = this.health(state);
     const signature = issues.join('\n');
     const diagnosticsEnabled = this.env.NOTIFY_DIAGNOSTICS === 'true';
@@ -211,28 +234,30 @@ export class Vigilante {
       }
       state.warnings = { signature, since: Date.now() };
     }
-    this.prune(state);
     await this.save(state);
     await this.deliver(state);
+    await this.dispatchOcr(state);
     return this.status(state);
   }
   status(state) {
-    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ type: key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, pending: Object.keys(state.queue).length, mediaPending: Object.values(state.media).filter(m => !m.done).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
+    const media = Object.values(state.media);
+    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ type: key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.OCR_DISPATCH_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
   }
   async fetch(request) {
-    const path = new URL(request.url).pathname;
+    const { pathname: path, searchParams } = new URL(request.url);
     // Read-only diagnostics must remain available while a collection is running.
     if (path === '/status') return json(this.status(await this.load()));
     if (path === '/media') {
       const state = await this.load();
-      return json({ items: Object.values(state.media).filter(m => !m.done && (m.attempts || 0) < 3).sort((a, b) => a.created - b.created).slice(0, 12) });
+      const limit = Math.min(48, Math.max(1, Number(searchParams.get('limit')) || 12));
+      const items = Object.values(state.media).filter(canReadMedia)
+        .sort((a, b) => (a.attempts || 0) - (b.attempts || 0) || a.created - b.created);
+      return json({ items: items.slice(0, limit) });
     }
     if (this.busy) return json({ error: 'revisión en curso' }, 409);
     this.busy = true;
     try {
       const state = await this.load();
-      if (path === '/status') return json(this.status(state));
-      if (path === '/media') return json({ items: Object.values(state.media).filter(m => !m.done && (m.attempts || 0) < 3).sort((a, b) => a.created - b.created).slice(0, 12) });
       if (path === '/run') return json(await this.run(state));
       if (path === '/ingest') {
         const data = JSON.parse(await readText(request, 200000));

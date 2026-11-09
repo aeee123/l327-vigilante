@@ -64,7 +64,7 @@ Invoke-RestMethod "$botUrl/test-alert" -Method Post -Headers $adminHeaders
 Invoke-RestMethod "$botUrl/run" -Method Post -Headers $adminHeaders
 ```
 
-`/status` muestra última revisión, resultado y antigüedad de cada fuente, cola, errores de Telegram y documentos pendientes. `/media` lista hasta doce documentos pendientes que no hayan agotado tres intentos. Los errores agotados siguen visibles en `/status`; requieren revisar la fuente o reiniciar su procesamiento mediante una futura herramienta administrativa. El bot no los declara exitosos.
+`/status` distingue los documentos que el lector aún puede procesar (`mediaPending`) de los que agotaron sus tres intentos (`mediaReview`). `/media` devuelve hasta doce documentos por defecto y el lector solicita hasta 48. Los archivos agotados conservan sus diagnósticos para revisión.
 
 `/test-alert` manda una prueba claramente identificada, sin fingir un corte. Sin token, devuelve 401; con GET, 405. Hay un límite de una prueba por minuto.
 
@@ -87,6 +87,8 @@ El flujo `.github/workflows/ocr.yml` ya está preparado, pero empieza deshabilit
 1. Secret `BOT_URL`: origen HTTPS del Worker, sin ruta ni barra final.
 2. Secret `ADMIN_TOKEN`: el mismo secreto configurado en Cloudflare.
 3. Variable `ENABLE_OCR`: `true`.
+
+Para iniciar el lector desde Cloudflare cuando haya imágenes o PDF pendientes, configura el secreto `OCR_DISPATCH_TOKEN` con un token de GitHub limitado al repositorio `aeee123/l327-vigilante` y permiso **Actions: escritura**. Cloudflare espera diez minutos entre intentos de arranque o desde la última actividad del lector. GitHub conserva su programación de respaldo y decide cuándo asigna un ejecutor.
 4. Habilitar Actions y mantener el flujo en la rama predeterminada.
 
 En repositorios públicos, los runners estándar son gratuitos. En privados hay una cuota de minutos: un flujo cada cinco minutos puede superarla. No se cambió la visibilidad de ningún repositorio ni se publicó el proyecto. GitHub programa como mínimo cada cinco minutos y puede retrasar las ejecuciones; además deshabilita horarios en repositorios públicos tras sesenta días sin actividad. No es una garantía de notificación instantánea.

@@ -85,6 +85,40 @@ test('campañas de salud sin aviso eléctrico no entran en la cola OCR', async (
   await bot.consider(state,{...candidate(),text:'Octubre Rosa: corte de energía en L-327.',media:[{url:'https://pbs.twimg.com/b.jpg',type:'image'}]});
   assert.equal(Object.keys(state.media).length,1);
 });
+test('OCR retira fotos de visitas y conserva las que acompañan un aviso eléctrico', async () => {
+  const { bot } = instance();
+  const state = await bot.load();
+  const visit = 'Alumnos y catedráticos coincidieron durante la visita al Cajón.';
+  const media = [{ url: 'https://pbs.twimg.com/media/visit.jpg', type: 'image' }];
+  await bot.consider(state, { ...candidate(), text: visit + ' Suspensión del servicio eléctrico.', media });
+  const item = Object.values(state.media)[0];
+  assert.ok(item);
+  item.attempts = 3;
+  assert.equal(bot.status(state).mediaReview, 1);
+  await bot.consider(state, { ...candidate(), text: visit, media });
+  bot.prune(state);
+  assert.equal(item.done, true);
+  assert.equal(bot.status(state).mediaReview, 0);
+});
+test('OCR pide una ejecución para archivos procesables y limita los reintentos', async t => {
+  const { bot } = instance({ OCR_DISPATCH_TOKEN: 'fake' });
+  const state = await bot.load();
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.match(url, /aeee123\/l327-vigilante\/actions\/workflows\/ocr.yml\/dispatches$/);
+    assert.equal(options.headers.authorization, 'Bearer fake');
+    calls++;
+    return new Response(null, { status: 204 });
+  });
+  state.media.a = { parent: {}, attempts: 3 };
+  await bot.dispatchOcr(state);
+  assert.equal(calls, 0);
+  state.media.b = { parent: {} };
+  await bot.dispatchOcr(state);
+  await bot.dispatchOcr(state);
+  assert.equal(calls, 1);
+  assert.equal(bot.status(state).ocrDispatch.error, null);
+});
 test('fotos institucionales se retiran sin declararlas leídas por OCR', async () => {
   const {bot}=instance();const state=await bot.load();
   for (const [id,title] of [['award','Entrega de medalla y cooperación internacional'],['training','Prevención y seguridad laboral: capacitación']]) {
