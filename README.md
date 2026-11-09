@@ -8,7 +8,7 @@ El bot busca avisos que mencionen explícitamente L-327, L327, SIS-L327 o línea
 
 - Revisión programada cada minuto para la primera página de ENEE y las dos cuentas de X; segunda página de ENEE cada cinco minutos. Google News fue retirado. Se consultan hasta cuatro artículos por ciclo con rotación.
 - Extracción del artículo completo, su fecha de publicación y sus imágenes/PDF. Se eliminó la mezcla con preguntas frecuentes, menús y pies de página.
-- X se lee como fuente experimental. Se decodifican objetos JSON sin ejecutar código remoto; texto, comillas, autor, ID y fotos se obtienen de la misma publicación. No se adivina el ID por cercanía de horario.
+- CND y ENEE se consultan mediante FxTwitter en el cron de un minuto. El bot verifica el autor y conserva el ID, la fecha, el texto completo y los enlaces directos a las fotos. Si FxTwitter falla, intenta leer el perfil público de X y registra el motivo en `/status`.
 - Fechas explícitas con día/mes/año, fechas numéricas, cambio de año acotado y rechazo de avisos vencidos. Ventana de publicación de siete días, o evento futuro de hasta treinta días. Reportes de interrupción sin fecha de evento: hasta veinticuatro horas.
 - Los cortes programados para hoy siguen siendo programados. No se asegura que físicamente se haya ido la luz solo por encontrar una fecha. Hay estados distintos para cancelaciones y restablecimientos.
 - Una cola persistente y un único Durable Object coordinan las ejecuciones. Los envíos confirmados se guardan inmediatamente; los fallidos quedan pendientes con reintentos y respeto de `retry_after`.
@@ -19,7 +19,7 @@ El bot busca avisos que mencionen explícitamente L-327, L327, SIS-L327 o línea
 
 ## Lo comprobado sobre X y ENEE
 
-La consulta directa desde este equipo devolvió cinco publicaciones de CNDHonduras, con tres fotos. El parser anterior truncaba el texto que contenía `"cerebro"`; el nuevo conserva las comillas. La publicación más reciente visible en esa respuesta fue del 16 de octubre de 2026. Una consulta desde otro servicio recibió 403. Esto verifica que el scraping puede funcionar, pero no demuestra que el conjunto visible esté completo ni actualizado.
+El 9 de noviembre de 2026, FxTwitter devolvió el texto completo de comunicados recientes de CND y publicaciones de ENEE con enlaces directos a las fotos. Durante las pruebas también hubo respuestas 404 intermitentes. La frecuencia de consulta del bot y la frescura que ofrece FxTwitter son independientes.
 
 La lista oficial de mantenimientos consultada devolvió nueve enlaces de mayo de 2026. Un boletín semanal contenía una portada y un enlace acortado al documento. Una búsqueda de palabras en títulos nunca cubriría todos esos avisos.
 
@@ -99,7 +99,7 @@ El lector acepta solo hosts explícitos, HTTPS y destinos públicos; no reenvía
 |---|---|---|
 | Cloudflare Worker + Durable Object SQLite | Plan gratuito dentro de sus cuotas; revisión por minuto, persistencia y coordinación | No asegura que las fuentes publiquen contenido nuevo o completo |
 | Web oficial ENEE | Sin API de pago; fuente primaria de mantenimiento | La lista consultada parecía atrasada; parte del contenido está en imágenes/documentos |
-| Scraping X actual | Sin API de pago; conserva publicaciones y fotos cuando la respuesta las incluye | Bloqueos, contenido parcial y cambios de estructura; siempre experimental |
+| FxTwitter y lectura directa de respaldo | Sin clave de API; hasta 2.880 consultas principales por día entre ambas cuentas con el cron actual | La frescura y disponibilidad dependen de las respuestas de FxTwitter y X |
 | Tesseract/Poppler en equipo propio | Software gratuito; puede ejecutarse cada minuto | Equipo e internet disponibles; OCR puede equivocarse |
 | Tesseract/Poppler en Actions público | Runner estándar gratuito | Cinco minutos o más; atrasos e inactividad; exige habilitación |
 | RSSHub autohospedado para X | Software abierto, adaptable como fuente futura | Requiere servidor y normalmente sesión/cookie; mantenimiento y fallos documentados. No se añadió un intermediario público no verificado |
@@ -129,6 +129,7 @@ Incluye pruebas de regresión de fechas, circuito, antigüedad, parser X, conten
 ## Documentación consultada
 
 - X, precios oficiales: https://docs.x.com/x-api/getting-started/pricing
+- FxTwitter, API pública: https://github.com/FxEmbed/FxEmbed/blob/main/docs/src/content/docs/api/introduction.mdx
 - ENEE, mantenimientos: https://www.eneeutcd.hn/es/inoticias/listar/G2/249/1/mantenimientos-programados/
 - Cloudflare Durable Objects, precios: https://developers.cloudflare.com/durable-objects/platform/pricing/
 - Cloudflare KV, límites: https://developers.cloudflare.com/kv/platform/limits/

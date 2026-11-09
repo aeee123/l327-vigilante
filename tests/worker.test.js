@@ -121,22 +121,47 @@ test('una página OCR ilegible no impide procesar las otras páginas', async () 
 test('lector limita bytes antes de parsear contenido externo', async () => {
   await assert.rejects(readText(new Response('demasiado grande'), 5), /grande/);
 });
-test('recolección completa guarda foto de X, envía una vez y conserva la deduplicación', async t => {
+test('FxTwitter conserva el texto largo, guarda fotos de X y envía una sola vez', async t => {
   const { bot } = instance({TELEGRAM_TOKEN:'fake',TELEGRAM_CHAT_ID:'fake'});
   let sends = 0;
-  const tweet = {rest_id:'2110932649590038780',result:{core:{user_results:{result:{core:{screen_name:'CNDHonduras'}}}},details:{full_text:'L-327: interrupción por falla de energía.',created_at_ms:Date.now()},media_entities2:[{type:'photo',media_url_https:'https://pbs.twimg.com/media/notice.jpg'}]}};
-  const x = `<script>stream({value:${JSON.stringify(JSON.stringify({data:tweet}))}})</script>`;
-  t.mock.method(globalThis, 'fetch', async (url) => {
-    if (url.includes('api.telegram.org')) {sends++;return Response.json({ok:true,result:{message_id:10}});}
-    if (url.includes('x.com/CNDHonduras')) return new Response(x);
-    if (url.includes('x.com/eneehnoficial')) return new Response('<html>Sin datos</html>');
+  const tweet = {
+    type: 'status', id: '2110932649590038780', author: { screen_name: 'CNDHonduras' },
+    text: 'Comunicado oficial. '.repeat(18) + 'L-327: interrupción por falla de energía.',
+    created_timestamp: Math.floor(Date.now() / 1000),
+    media: { photos: [{ url: 'https://pbs.twimg.com/media/notice.jpg?name=orig' }, { url: 'https://other.example/image.jpg' }] },
+  };
+  const other = { ...tweet, id: '2110932649590038781', text: 'Corte de energía en L-327 por mantenimiento', author: { screen_name: 'otraCuenta' } };
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url.includes('api.telegram.org')) {
+      sends++;
+      assert.match(JSON.parse(options.body).text, /interrupción por falla/);
+      return Response.json({ok:true,result:{message_id:10}});
+    }
+    if (url.includes('api.fxtwitter.com/2/profile/CNDHonduras/')) {
+      assert.equal(options.headers['if-none-match'], undefined);
+      return Response.json({code:200,results:[other, tweet]});
+    }
+    if (url.includes('api.fxtwitter.com/2/profile/EneeHnOficial/')) return Response.json({code:404,results:[]});
+    if (url === 'https://x.com/eneehnoficial') {
+      const post = {rest_id:'2110932649590038782', result:{
+        core:{user_results:{result:{core:{screen_name:'EneeHnOficial'}}}},
+        details:{full_text:'L-328: mantenimiento de la red eléctrica.',created_at_ms:Date.now()},
+      }};
+      return new Response(`<script>stream({value:${JSON.stringify(JSON.stringify({data:post}))}})</script>`);
+    }
     assert.equal(url.includes('news.google.com'),false,'Google News no debe consultarse');
     if (url.includes('/listar/')) return new Response('<a href="/es/mantenimiento-NT123">Aviso de mantenimiento programado</a>');
     return new Response('<main><p>Mantenimiento fuera del circuito L-328</p></main>');
   });
-  const state = await bot.load(); await bot.run(state);
+  const state = await bot.load();
+  state.sources['x-cnd'] = {etag:'old-x-etag'};
+  await bot.run(state);
   assert.equal(sends,1); assert.equal(Object.keys(state.sent).length,1); assert.equal(Object.keys(state.media).length,1);
-  assert.equal(state.sources['x-enee'].failures,1);
+  assert.equal(Object.values(state.media)[0].url,'https://pbs.twimg.com/media/notice.jpg');
+  assert.equal(state.sources['x-cnd'].count,1);
+  assert.equal(state.sources['x-cnd'].newest,new Date(tweet.created_timestamp * 1000).toISOString());
+  assert.equal(state.sources['x-enee'].count,1);
+  assert.match(state.sources['x-enee'].fallbackReason,/FxTwitter/);
   // Simulate the next scheduled cycle while keeping the publication unchanged.
   state.lastRun=0;state.telegram.next=0;for(const s of Object.values(state.sources))s.checked=0;
   await bot.run(state);assert.equal(sends,1);

@@ -141,6 +141,39 @@ export function tweets(html, handle) {
   roots.forEach(x => visit(x));
   return [...out.values()].sort((a, b) => Date.parse(b.published) - Date.parse(a.published));
 }
+export function fxTweets(json, handle) {
+  const timeline = JSON.parse(json);
+  if (timeline?.code !== 200 || !Array.isArray(timeline.results)) {
+    throw Error('FxTwitter no entregó una cronología válida');
+  }
+  const posts = new Map();
+  for (const post of timeline.results) {
+    if (post?.type !== 'status' || typeof post.id !== 'string' || !/^\d{15,25}$/.test(post.id)) continue;
+    const author = post.author?.screen_name;
+    if (typeof author !== 'string' || author.toLowerCase() !== handle.toLowerCase()) continue;
+    const published = new Date(post.created_timestamp * 1000);
+    if (!Number.isFinite(post.created_timestamp) || post.created_timestamp <= 0 || !Number.isFinite(published.getTime())) continue;
+    const text = typeof post.text === 'string' ? post.text : '';
+    const photos = Array.isArray(post.media?.photos) ? post.media.photos : [];
+    const media = [];
+    for (const photo of photos) {
+      const url = typeof photo?.url === 'string' && safeUrl(photo.url);
+      if (!url) continue;
+      const image = new URL(url);
+      if (image.host !== 'pbs.twimg.com' || !image.pathname.startsWith('/media/')) continue;
+      // OCR already requests the original; keep the existing image key when possible.
+      if (image.searchParams.get('name') === 'orig') image.searchParams.delete('name');
+      media.push({ url: image.href, type: 'image' });
+    }
+    if (!text.trim() && !media.length) continue;
+    posts.set(post.id, {
+      url: `https://x.com/${handle}/status/${post.id}`,
+      title: text.slice(0, 160) || 'Publicación de X',
+      text, published: published.toISOString(), source: 'X (FxTwitter)', media,
+    });
+  }
+  return [...posts.values()].sort((a, b) => b.published.localeCompare(a.published));
+}
 export function message(c, result = classify(c)) {
   const ds = result.dates || [], when = ds.map(d => `${d.iso}${d.days === 0 ? ' (HOY)' : d.days === 1 ? ' (MAÑANA)' : ''}`).join(', ');
   const index = normalize(c.text).search(CIRCUIT);

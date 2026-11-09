@@ -1,12 +1,13 @@
-import { DAY, normalize, classify, digest, articleLinks, article, tweets, message, safeUrl, unrelatedPost } from './core.js';
+import { DAY, normalize, classify, digest, articleLinks, article, tweets, fxTweets, message, safeUrl, unrelatedPost } from './core.js';
 
 const UA = 'L327-Vigilante/2.0 (+monitor de avisos publicos ENEE)';
 const MAX_BODY = 2 * 1024 * 1024;
 export const SOURCES = [
   { id: 'enee-1', type: 'html', url: 'https://www.eneeutcd.hn/es/inoticias/listar/G2/249/1/mantenimientos-programados/', interval: 60000 },
   { id: 'enee-2', type: 'html', url: 'https://www.eneeutcd.hn/es/inoticias/listar/G2/249/2/mantenimientos-programados/', interval: 300000 },
-  { id: 'x-cnd', type: 'x', handle: 'CNDHonduras', url: 'https://x.com/CNDHonduras', interval: 60000 },
-  { id: 'x-enee', type: 'x', handle: 'eneehnoficial', url: 'https://x.com/eneehnoficial', interval: 60000 },
+  // The cron runs once a minute. Allow modest scheduling jitter.
+  { id: 'x-cnd', type: 'x', handle: 'CNDHonduras', url: 'https://api.fxtwitter.com/2/profile/CNDHonduras/statuses?count=5', interval: 45000 },
+  { id: 'x-enee', type: 'x', handle: 'eneehnoficial', url: 'https://api.fxtwitter.com/2/profile/EneeHnOficial/statuses?count=10', interval: 45000 },
 ];
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 const blank = () => ({ version: 2, sent: {}, queue: {}, media: {}, sources: {}, articles: {}, warnings: {}, lastRun: 0, telegram: {} });
@@ -40,6 +41,26 @@ async function download(url, previous = {}) {
       return { text: await readText(r), etag: r.headers.get('etag'), modified: r.headers.get('last-modified') };
     }
   } finally { clearTimeout(timer); }
+}
+async function downloadTimeline(source, previous) {
+  try {
+    const response = await download(source.url, previous?.url === source.url ? previous : {});
+    if (response.unchanged) return { response };
+    const candidates = fxTweets(response.text, source.handle);
+    if (!candidates.length) throw Error('sin publicaciones legibles');
+    return { response, candidates };
+  } catch (error) {
+    const fallbackReason = `FxTwitter: ${error.message}`;
+    try {
+      const response = await download(`https://x.com/${source.handle}`);
+      const candidates = tweets(response.text, source.handle);
+      if (!candidates.length) throw Error('sin publicaciones legibles');
+      // A validator from the direct profile cannot be reused for FxTwitter.
+      return { response: {}, candidates, fallbackReason };
+    } catch (fallback) {
+      throw Error(`${fallbackReason}; X directo: ${fallback.message}`);
+    }
+  }
 }
 export async function sendTelegram(env, text) {
   if (!env.TELEGRAM_TOKEN || !env.TELEGRAM_CHAT_ID) return { ok: false, error: 'faltan secretos de Telegram', retry: 300 };
@@ -93,25 +114,25 @@ export class Vigilante {
     const now = Date.now();
     const due = SOURCES.filter(s => now - (state.sources[s.id]?.checked || 0) >= s.interval);
     const responses = await Promise.all(due.map(async source => {
-      try { return { source, response: await download(source.url, state.sources[source.id]) }; }
+      const previous = state.sources[source.id];
+      try {
+        if (source.type === 'x') return { source, ...await downloadTimeline(source, previous) };
+        return { source, response: await download(source.url, previous) };
+      }
       catch (e) { return { source, error: e.message }; }
     }));
-    for (const { source, response, error } of responses) {
+    for (const { source, response, error, candidates = [], fallbackReason } of responses) {
       const previous = state.sources[source.id] || {};
       if (error) { state.sources[source.id] = { ...previous, checked: now, error, failures: (previous.failures || 0) + 1 }; continue; }
       if (response.unchanged) { state.sources[source.id] = { ...previous, checked: now, error: previous.error || null }; continue; }
-      let candidates = [];
       try {
         if (source.type === 'html') {
           const links = articleLinks(response.text, source.url);
           if (!links.length) throw Error('sin enlaces de avisos: revisar estructura HTML');
           for (const c of links) if (!state.articles[c.url]) state.articles[c.url] = { ...c, checked: 0 };
-        } else if (source.type === 'x') {
-          candidates = tweets(response.text, source.handle);
-          if (!candidates.length) throw Error('X no entregó publicaciones legibles');
         }
         for (const c of candidates) await this.consider(state, c);
-        state.sources[source.id] = { checked: now, success: now, etag: response.etag, modified: response.modified, count: candidates.length, failures: 0, error: null, newest: candidates[0]?.published || null };
+        state.sources[source.id] = { url: source.url, checked: now, success: now, etag: response.etag, modified: response.modified, count: candidates.length, failures: 0, error: null, newest: candidates[0]?.published || null, fallbackReason };
       } catch (e) { state.sources[source.id] = { ...previous, checked: now, failures: (previous.failures || 0) + 1, error: e.message }; }
     }
     // Four articles/run, oldest checked first. Rotation prevents starvation.
