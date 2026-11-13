@@ -8,12 +8,12 @@ const token = process.env.OBSCURA_SERVICE_TOKEN;
 if (!token || token.length < 32) throw new Error('Configura OBSCURA_SERVICE_TOKEN');
 const authorization = Buffer.from('Bearer ' + token);
 const accounts = new Map([['cnd', 'CNDHonduras'], ['enee', 'EneeHnOficial']]);
-let busy = false;
+const busy = new Set();
 
 async function evaluate(url, expression) {
   const { stdout } = await run(process.env.OBSCURA_BIN || 'obscura', [
-    'fetch', url, '--wait-until', 'domcontentloaded', '--timeout', '16', '--eval', expression,
-  ], { timeout: 20000, maxBuffer: 256 * 1024, windowsHide: true });
+    'fetch', url, '--wait-until', 'domcontentloaded', '--timeout', '25', '--eval', expression,
+  ], { timeout: 29000, maxBuffer: 256 * 1024, windowsHide: true });
   const value = JSON.parse(stdout);
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
@@ -50,8 +50,8 @@ createServer(async (request, response) => {
   const id = url.searchParams.get('id');
   if (url.pathname !== '/profile' && url.pathname !== '/post') return reply(404, { error: 'route' });
   if (url.pathname === '/post' && !/^[0-9]{15,25}$/.test(id || '')) return reply(400, { error: 'id' });
-  if (busy) return reply(503, { error: 'busy' });
-  busy = true;
+  if (busy.has(handle)) return reply(503, { error: 'busy' });
+  busy.add(handle);
   try {
     const profile = 'https://x.com/' + handle;
     if (url.pathname === '/profile') {
@@ -62,9 +62,12 @@ createServer(async (request, response) => {
     const post = await evaluate(profile + '/status/' + id, `JSON.stringify((${readPost})())`);
     if (!post.text || !Number.isFinite(Date.parse(post.published))) return reply(502, { error: 'post unavailable' });
     return reply(200, { id, ...post });
-  } catch {
-    return reply(502, { error: 'browser read failed' });
+  } catch (error) {
+    const reason = error.killed || /timed? out|timeout/i.test(error.stderr || '')
+      ? 'browser timeout' : 'browser read failed';
+    console.warn(handle, url.pathname, reason);
+    return reply(502, { error: reason });
   } finally {
-    busy = false;
+    busy.delete(handle);
   }
 }).listen(Number(process.env.PORT || 10000), '0.0.0.0');
