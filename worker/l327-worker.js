@@ -48,7 +48,7 @@ async function downloadObscura(source, previous, token) {
   const signal = AbortSignal.timeout(32000);
   async function read(path) {
     const response = await fetch('https://l327-vigilante.onrender.com' + path, {
-      headers: { authorization: `Bearer ${token}` }, redirect: 'error', signal,
+      headers: { authorization: `Bearer ${token}` }, redirect: 'manual', signal,
     });
     const body = await readText(response, 100000);
     if (!response.ok) {
