@@ -43,6 +43,47 @@ async function download(url, previous = {}) {
     }
   } finally { clearTimeout(timer); }
 }
+async function downloadObscura(source, previous, token) {
+  const account = source.id === 'x-cnd' ? 'cnd' : 'enee';
+  const signal = AbortSignal.timeout(32000);
+  async function read(path) {
+    const response = await fetch('https://l327-vigilante.onrender.com' + path, {
+      headers: { authorization: `Bearer ${token}` }, redirect: 'error', signal,
+    });
+    const body = await readText(response, 100000);
+    if (!response.ok) {
+      const reason = body.includes('"browser timeout"') ? ' (tiempo de espera)' : '';
+      throw Error(`HTTP ${response.status}${reason}`);
+    }
+    return JSON.parse(body);
+  }
+  const { ids } = await read(`/profile?account=${account}`);
+  if (!Array.isArray(ids) || !ids.length || !ids.every(id => typeof id === 'string' && /^\d{15,25}$/.test(id))) {
+    throw Error('sin publicaciones válidas');
+  }
+  const seen = previous?.obscuraSeen || [];
+  const unseen = ids.filter(id => !seen.includes(id));
+  // The profile and detail requests share a time budget. Use the fast
+  // sources to cover a burst, and read the newest missing detail next.
+  const id = unseen[0];
+  const candidates = [];
+  if (id) {
+    const post = await read(`/post?account=${account}&id=${id}`);
+    const published = Date.parse(post.published);
+    if (post.id !== id || !Number.isFinite(published) || published > Date.now() + 3600000 || typeof post.text !== 'string' || !post.text.trim()) {
+      throw Error('publicación incompleta');
+    }
+    const media = (Array.isArray(post.photos) ? post.photos : []).filter(url =>
+      typeof url === 'string' && url.startsWith('https://pbs.twimg.com/media/')).map(url => {
+      const photo = new URL(url);
+      photo.searchParams.delete('name');
+      return { url: photo.href, type: 'image' };
+    });
+    candidates.push({ url: `https://x.com/${source.handle}/status/${id}`, title: post.text.slice(0, 160),
+      text: post.text, published: new Date(published).toISOString(), source: 'X (Obscura)', media });
+  }
+  return { candidates, obscuraSeen: id ? [id, ...seen].slice(0, 40) : seen, obscuraBacklog: unseen.length > 1 };
+}
 async function downloadTimeline(source, previous) {
   try {
     const response = await download(source.url, previous?.url === source.url ? previous : {});
@@ -117,15 +158,36 @@ export class Vigilante {
     const responses = await Promise.all(due.map(async source => {
       const previous = state.sources[source.id];
       try {
-        if (source.type === 'x') return { source, ...await downloadTimeline(source, previous) };
+        if (source.type === 'x') {
+          let obscuraError;
+          let obscura;
+          if (this.env.OBSCURA_SERVICE_TOKEN) {
+            try { obscura = await downloadObscura(source, previous, this.env.OBSCURA_SERVICE_TOKEN); }
+            catch (error) { obscuraError = error.name === 'TimeoutError' ? 'tiempo de espera agotado' : error.message; }
+          }
+          if (obscura?.candidates.length) {
+            if (obscura.obscuraBacklog) {
+              try {
+                const backup = await downloadTimeline(source, {});
+                const ids = new Set(obscura.candidates.map(candidate => candidate.url.split('/').at(-1)));
+                obscura.candidates.push(...(backup.candidates || []).filter(candidate => !ids.has(candidate.url.split('/').at(-1))));
+                obscura.candidates.sort((a, b) => Date.parse(b.published) - Date.parse(a.published));
+              } catch {
+                // Retain the successful Obscura read even when backup is unavailable.
+              }
+            }
+            return { source, response: {}, ...obscura };
+          }
+          return { source, ...await downloadTimeline(source, previous), obscuraError };
+        }
         return { source, response: await download(source.url, previous) };
       }
       catch (e) { return { source, error: e.message }; }
     }));
-    for (const { source, response, error, candidates = [], fallbackReason } of responses) {
+    for (const { source, response, error, candidates = [], fallbackReason, obscuraSeen, obscuraError } of responses) {
       const previous = state.sources[source.id] || {};
       if (error) { state.sources[source.id] = { ...previous, checked: now, error, failures: (previous.failures || 0) + 1 }; continue; }
-      if (response.unchanged) { state.sources[source.id] = { ...previous, checked: now, error: previous.error || null }; continue; }
+      if (response.unchanged) { state.sources[source.id] = { ...previous, checked: now, error: previous.error || null, obscuraError }; continue; }
       try {
         if (source.type === 'html') {
           const links = articleLinks(response.text, source.url);
@@ -133,7 +195,7 @@ export class Vigilante {
           for (const c of links) if (!state.articles[c.url]) state.articles[c.url] = { ...c, checked: 0 };
         }
         for (const c of candidates) await this.consider(state, c);
-        state.sources[source.id] = { url: source.url, checked: now, success: now, etag: response.etag, modified: response.modified, count: candidates.length, failures: 0, error: null, newest: candidates[0]?.published || null, fallbackReason };
+        state.sources[source.id] = { url: source.url, checked: now, success: now, etag: response.etag, modified: response.modified, count: candidates.length, failures: 0, error: null, newest: [previous.newest, candidates[0]?.published].filter(Boolean).sort().at(-1) || null, fallbackReason, obscuraSeen: obscuraSeen || previous.obscuraSeen, obscuraError, reader: obscuraSeen ? 'obscura' : source.type === 'x' ? (fallbackReason ? 'x-directo' : 'fxtwitter') : 'html' };
       } catch (e) { state.sources[source.id] = { ...previous, checked: now, failures: (previous.failures || 0) + 1, error: e.message }; }
     }
     // Four articles/run, oldest checked first. Rotation prevents starvation.
