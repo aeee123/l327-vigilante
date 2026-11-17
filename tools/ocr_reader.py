@@ -34,6 +34,7 @@ class PublicRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def download(url, depth=0):
+    source_url = url
     if depth > 3:
         raise ValueError("demasiados enlaces de documento")
     public_url(url)
@@ -45,9 +46,23 @@ def download(url, depth=0):
     if parsed.hostname in {"drive.google.com", "docs.google.com"} and "/file/d/" in parsed.path:
         file_id = parsed.path.split("/file/d/", 1)[1].split("/", 1)[0]
         url = "https://drive.google.com/uc?export=download&id=" + urllib.parse.quote(file_id)
-    request = urllib.request.Request(url, headers={"User-Agent": "L327-Vigilante-OCR/2.0"})
     opener = urllib.request.build_opener(PublicRedirect())
-    with opener.open(request, timeout=25) as response:
+    for attempt in range(3):
+        request = urllib.request.Request(url, headers={"User-Agent": "L327-Vigilante-OCR/2.0"})
+        try:
+            response = opener.open(request, timeout=25)
+            break
+        except urllib.error.HTTPError as error:
+            if attempt == 2:
+                raise
+            if parsed.hostname == "pbs.twimg.com" and url != source_url and error.code in {400, 403, 404}:
+                url = source_url
+            elif error.code in {429, 500, 502, 503, 504}:
+                time.sleep(2 ** (attempt + 1))
+            else:
+                raise
+            error.close()
+    with response:
         data = response.read(MAX_BYTES + 1)
         final_url = response.url
         mime = response.headers.get_content_type()
@@ -105,7 +120,21 @@ def extract(data, kind):
             source = root / "image"
             source.write_bytes(data)
             pages = [source]
-        units = [recognize(page) for page in pages]
+        units = []
+        for page in pages:
+            unit = recognize(page)
+            if unit["confidence"] < 55 or len(unit["text"].strip()) < 10:
+                from PIL import Image, ImageOps
+                with Image.open(page) as image:
+                    gray = ImageOps.autocontrast(ImageOps.grayscale(ImageOps.exif_transpose(image)))
+                    scale = min(2, 2800 / max(gray.size))
+                    enhanced = gray.resize(tuple(max(1, round(n * scale)) for n in gray.size), Image.Resampling.LANCZOS)
+                    path = root / "enhanced.png"
+                    enhanced.save(path)
+                alternative = recognize(path)
+                if len(alternative["text"].strip()) >= 10 and (len(unit["text"].strip()) < 10 or alternative["confidence"] > unit["confidence"]):
+                    unit = alternative
+            units.append(unit)
         if sum(len(u["text"]) for u in units) > 60000:
             raise ValueError("texto OCR demasiado extenso")
         return units
@@ -149,16 +178,19 @@ def main():
         try:
             data, kind = download(item["url"])
             units = extract(data, kind)
-            result = api(base, token, "/ingest", {"id": item["id"], "units": units})
-            if result.get("needs_review") or result.get("reason", "").startswith("OCR"):
-                reviews += 1
-            print(item["id"][:12], json.dumps(result, ensure_ascii=False))
         except Exception as error:
             failures += 1
             # Never print exception URLs or response bodies: they may contain secrets.
             category = type(error).__name__
+            if isinstance(error, urllib.error.HTTPError):
+                category = f"descarga HTTP {error.code}"
             print(item["id"][:12], "OCR pendiente:", category)
             api(base, token, "/ingest", {"id": item["id"], "error": category})
+        else:
+            result = api(base, token, "/ingest", {"id": item["id"], "units": units})
+            if result.get("needs_review") or result.get("reason", "").startswith("OCR"):
+                reviews += 1
+            print(item["id"][:12], json.dumps(result, ensure_ascii=False))
         time.sleep(1.2)
     summary = f"Documentos procesados: {processed} de {len(items)}. Requieren revisión: {reviews}. Fallos de ejecución: {failures}."
     print(summary)

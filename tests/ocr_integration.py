@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='l327-test-') as temp:
             draw.text((50, 50 + i * 115), line, font=font, fill='black')
         path = Path(temp) / (name + '.png')
         im.save(path)
-        unit = reader.recognize(path)
+        unit, = reader.extract(path.read_bytes(), "image")
         assert unit['confidence'] >= 55, (name, 'confianza OCR insuficiente')
         candidate = {'text': unit['text'], 'published': now.isoformat()}
         code = "import {classify} from './worker/core.js';let input='';for await(const chunk of process.stdin) input+=chunk;console.log(JSON.stringify(classify(JSON.parse(input))));"
