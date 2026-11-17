@@ -82,27 +82,31 @@ async function downloadObscura(source, previous, token) {
     candidates.push({ url: `https://x.com/${source.handle}/status/${id}`, title: post.text.slice(0, 160),
       text: post.text, published: new Date(published).toISOString(), source: 'X (Obscura)', media });
   }
-  return { candidates, obscuraSeen: id ? [id, ...seen].slice(0, 40) : seen, obscuraBacklog: unseen.length > 1 };
+  return { candidates, obscuraSeen: id ? [id, ...seen].slice(0, 40) : seen };
 }
-async function downloadTimeline(source, previous) {
-  try {
-    const response = await download(source.url, previous?.url === source.url ? previous : {});
-    if (response.unchanged) return { response };
-    const candidates = fxTweets(response.text, source.handle);
+async function downloadTimeline(source) {
+  const read = async (url, parse) => {
+    const response = await download(url);
+    const candidates = parse(response.text, source.handle);
     if (!candidates.length) throw Error('sin publicaciones legibles');
-    return { response, candidates };
-  } catch (error) {
-    const fallbackReason = `FxTwitter: ${error.message}`;
-    try {
-      const response = await download(`https://x.com/${source.handle}`);
-      const candidates = tweets(response.text, source.handle);
-      if (!candidates.length) throw Error('sin publicaciones legibles');
-      // A validator from the direct profile cannot be reused for FxTwitter.
-      return { response: {}, candidates, fallbackReason };
-    } catch (fallback) {
-      throw Error(`${fallbackReason}; X directo: ${fallback.message}`);
-    }
+    return candidates;
+  };
+  const [fx, direct] = await Promise.allSettled([
+    read(source.url, fxTweets),
+    read(`https://x.com/${source.handle}`, tweets),
+  ]);
+  if (fx.status === 'rejected' && direct.status === 'rejected') {
+    throw Error(`FxTwitter: ${fx.reason.message}; X directo: ${direct.reason.message}`);
   }
+  const candidates = new Map();
+  for (const post of [...(fx.value || []), ...(direct.value || [])]) {
+    const id = post.url.split('/').at(-1);
+    const previous = candidates.get(id);
+    if (!previous || post.text.length > previous.text.length) candidates.set(id, post);
+  }
+  const fallbackReason = fx.status === 'rejected' ? `FxTwitter: ${fx.reason.message}` : undefined;
+  const reader = fx.value && direct.value ? 'x-directo + fxtwitter' : fx.value ? 'fxtwitter' : 'x-directo';
+  return { response: {}, candidates: [...candidates.values()].sort((a, b) => Date.parse(b.published) - Date.parse(a.published)), fallbackReason, reader };
 }
 export async function sendTelegram(env, text) {
   if (!env.TELEGRAM_TOKEN || !env.TELEGRAM_CHAT_ID) return { ok: false, error: 'faltan secretos de Telegram', retry: 300 };
@@ -158,36 +162,15 @@ export class Vigilante {
     const responses = await Promise.all(due.map(async source => {
       const previous = state.sources[source.id];
       try {
-        if (source.type === 'x') {
-          let obscuraError;
-          let obscura;
-          if (this.env.OBSCURA_SERVICE_TOKEN) {
-            try { obscura = await downloadObscura(source, previous, this.env.OBSCURA_SERVICE_TOKEN); }
-            catch (error) { obscuraError = error.name === 'TimeoutError' ? 'tiempo de espera agotado' : error.message; }
-          }
-          if (obscura?.candidates.length) {
-            if (obscura.obscuraBacklog) {
-              try {
-                const backup = await downloadTimeline(source, {});
-                const ids = new Set(obscura.candidates.map(candidate => candidate.url.split('/').at(-1)));
-                obscura.candidates.push(...(backup.candidates || []).filter(candidate => !ids.has(candidate.url.split('/').at(-1))));
-                obscura.candidates.sort((a, b) => Date.parse(b.published) - Date.parse(a.published));
-              } catch {
-                // Retain the successful Obscura read even when backup is unavailable.
-              }
-            }
-            return { source, response: {}, ...obscura };
-          }
-          return { source, ...await downloadTimeline(source, previous), obscuraError };
-        }
+        if (source.type === 'x') return { source, ...await downloadTimeline(source) };
         return { source, response: await download(source.url, previous) };
       }
       catch (e) { return { source, error: e.message }; }
     }));
-    for (const { source, response, error, candidates = [], fallbackReason, obscuraSeen, obscuraError } of responses) {
+    for (const { source, response, error, candidates = [], fallbackReason, reader } of responses) {
       const previous = state.sources[source.id] || {};
       if (error) { state.sources[source.id] = { ...previous, checked: now, error, failures: (previous.failures || 0) + 1 }; continue; }
-      if (response.unchanged) { state.sources[source.id] = { ...previous, checked: now, error: previous.error || null, obscuraError }; continue; }
+      if (response.unchanged) { state.sources[source.id] = { ...previous, checked: now, error: previous.error || null }; continue; }
       try {
         if (source.type === 'html') {
           const links = articleLinks(response.text, source.url);
@@ -195,7 +178,7 @@ export class Vigilante {
           for (const c of links) if (!state.articles[c.url]) state.articles[c.url] = { ...c, checked: 0 };
         }
         for (const c of candidates) await this.consider(state, c);
-        state.sources[source.id] = { url: source.url, checked: now, success: now, etag: response.etag, modified: response.modified, count: candidates.length, failures: 0, error: null, newest: [previous.newest, candidates[0]?.published].filter(Boolean).sort().at(-1) || null, fallbackReason, obscuraSeen: obscuraSeen || previous.obscuraSeen, obscuraError, reader: obscuraSeen ? 'obscura' : source.type === 'x' ? (fallbackReason ? 'x-directo' : 'fxtwitter') : 'html' };
+        state.sources[source.id] = { url: source.url, checked: now, success: now, etag: response.etag, modified: response.modified, count: candidates.length, failures: 0, error: null, newest: [previous.newest, candidates[0]?.published].filter(Boolean).sort().at(-1) || null, fallbackReason, reader: reader || 'html' };
       } catch (e) { state.sources[source.id] = { ...previous, checked: now, failures: (previous.failures || 0) + 1, error: e.message }; }
     }
     // Four articles/run, oldest checked first. Rotation prevents starvation.
@@ -236,7 +219,7 @@ export class Vigilante {
     await this.save(state);
     try {
       const response = await fetch('https://api.github.com/repos/aeee123/l327-vigilante/actions/workflows/ocr.yml/dispatches', {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
+        method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(8000),
         headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': UA },
         body: JSON.stringify({ ref: 'main' }),
       });
@@ -275,10 +258,28 @@ export class Vigilante {
     const articles = Object.entries(state.articles).sort((a, b) => b[1].checked - a[1].checked);
     if (articles.length > 100) for (const [k] of articles.slice(100)) delete state.articles[k];
   }
+  async sampleObscura(state) {
+    const token = this.env.OBSCURA_SERVICE_TOKEN;
+    const checked = Date.now();
+    if (!token || checked - (state.obscuraSample?.checked || 0) < 5 * 60000) return null;
+    const results = await Promise.all(SOURCES.filter(source => source.type === 'x').map(async source => {
+      const previous = state.obscuraSample?.sources[source.id];
+      const start = Date.now();
+      try {
+        const sample = await downloadObscura(source, previous, token);
+        return [source.id, { ms: Date.now() - start, obscuraSeen: sample.obscuraSeen,
+          newest: [previous?.newest, sample.candidates[0]?.published].filter(Boolean).sort().at(-1) || null }];
+      } catch (error) {
+        return [source.id, { ...previous, ms: Date.now() - start, error: error.message }];
+      }
+    }));
+    return { checked, sources: Object.fromEntries(results) };
+  }
   async run(state) {
     if (Date.now() - state.lastRun < 45000) return { skipped: 'revisión reciente' };
     state.lastRun = Date.now();
     await this.save(state);
+    const obscuraSample = this.sampleObscura(state);
     try { await this.collect(state); state.lastError = null; }
     catch { state.lastError = 'falló la recolección; revisar estado de fuentes'; }
     this.prune(state);
@@ -299,11 +300,16 @@ export class Vigilante {
     await this.save(state);
     await this.deliver(state);
     await this.dispatchOcr(state);
+    const sample = await obscuraSample;
+    if (sample) {
+      state.obscuraSample = sample;
+      await this.save(state);
+    }
     return this.status(state);
   }
   status(state) {
     const media = Object.values(state.media);
-    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ type: key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.OCR_DISPATCH_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
+    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ type: key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, obscuraSample: state.obscuraSample || null, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.OCR_DISPATCH_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
   }
   async fetch(request) {
     const { pathname: path, searchParams } = new URL(request.url);

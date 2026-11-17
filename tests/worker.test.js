@@ -7,6 +7,27 @@ function instance(env = {}) {
   return { bot: new Vigilante({ storage }, env), db };
 }
 const candidate = () => ({ text: 'L-327: interrupción de energía por falla.', title: 'Aviso de falla', url: 'https://x.com/CNDHonduras/status/2110932649590038780', published: new Date().toISOString(), source: 'X' });
+test('el envío empieza aunque Obscura todavía no termine', async () => {
+  const { bot } = instance({ OBSCURA_SERVICE_TOKEN: 'fake-test-token' });
+  const state = await bot.load();
+  const sample = Promise.withResolvers();
+  const delivered = Promise.withResolvers();
+  bot.sampleObscura = () => sample.promise;
+  bot.collect = async state => { await bot.enqueue(state, candidate()); };
+  bot.deliver = async state => delivered.resolve(Object.keys(state.queue).length);
+  const run = bot.run(state);
+  let timeout;
+  try {
+    const count = await Promise.race([delivered.promise, new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(Error('el envío esperó a Obscura')), 500);
+    })]);
+    assert.equal(count, 1);
+  } finally {
+    clearTimeout(timeout);
+    sample.resolve({ checked: Date.now(), sources: {} });
+    await run;
+  }
+});
 test('rutas que envían exigen autorización y método', async () => {
   let calls = 0;
   const env = { ADMIN_TOKEN: 'test-secret', VIGILANTE: { idFromName: () => 'id', get: () => ({ fetch: async () => { calls++; return new Response('{}'); } }) } };
