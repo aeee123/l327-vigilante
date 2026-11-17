@@ -242,7 +242,7 @@ export class Vigilante {
       if (item.next > now) continue;
       // Persist the outbox before external side effects; an acknowledged send is saved immediately.
       await this.save(state);
-      const sent = await sendTelegram(this.env, item.candidate.probeId ? 'PRUEBA EBNMZ: imagen L-327 le?da correctamente. Simulaci?n sin corte real.' : item.candidate.system || message(item.candidate, result));
+      const sent = await sendTelegram(this.env, item.candidate.probeId ? 'PRUEBA EBNMZ: imagen L-327 procesada correctamente. Este mensaje es una prueba.' : item.candidate.system || message(item.candidate, result));
       state.telegram = { lastAttempt: now, error: sent.ok ? null : sent.error, next: sent.ok ? now + 1100 : now + sent.retry * 1000 };
       if (sent.ok) { state.sent[key] = { at: Date.now(), published: item.candidate.published, detected: item.candidate.detected ?? item.created, ocrFinished: item.candidate.ocrFinished, probe: Boolean(item.candidate.probeId), url: item.candidate.url, messageId: sent.messageId }; delete state.queue[key]; }
       else { item.attempts++; item.uncertain = !!sent.uncertain; item.next = Math.max(state.telegram.next, now + Math.min(3600000, 60000 * 2 ** Math.min(item.attempts, 6))); }
