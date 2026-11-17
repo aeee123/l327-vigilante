@@ -12,6 +12,7 @@ export const SOURCES = [
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 const blank = () => ({ version: 2, sent: {}, queue: {}, media: {}, sources: {}, articles: {}, warnings: {}, lastRun: 0, telegram: {} });
 const canReadMedia = m => !m.done && m.parent.unrelated !== true && (m.attempts || 0) < 3;
+const urgent = text => /\b(?:interrupcion(?:es)?|mantenimientos?|circuitos?|cortes?|suspension)\b/.test(normalize(text));
 export async function readText(response, max = MAX_BODY) {
   const reader = response.body?.getReader();
   if (!reader) return '';
@@ -134,7 +135,7 @@ export class Vigilante {
   async enqueue(state, candidate) {
     const result = classify(candidate);
     if (!result.relevant) return { accepted: false, reason: result.reason };
-    const key = await digest(normalize(candidate.text));
+    const key = candidate.probeId || await digest(normalize(candidate.text));
     if (state.sent[key] || state.queue[key]) return { accepted: false, reason: 'duplicado' };
     state.queue[key] = { candidate, attempts: 0, next: 0, created: Date.now() };
     return { accepted: true };
@@ -145,13 +146,13 @@ export class Vigilante {
     const unrelated = unrelatedPost(c.text);
     for (const media of c.media || []) {
       const id = await digest(c.url + '\n' + media.url);
-      if (state.media[id]) state.media[id].parent.unrelated = unrelated;
+      if (state.media[id]) { state.media[id].parent.unrelated = unrelated; state.media[id].priority ||= urgent(c.text); }
     }
     // PDFs/images are separate units; never attach another circuit's text to them.
     if (!unrelated && (validDate || classify(c).relevant) && c.media?.length) {
       for (const m of c.media) {
         const id = await digest(c.url + '\n' + m.url);
-        if (!state.media[id]) state.media[id] = { id, ...m, parent: { url: c.url, title: c.title, published: c.published, source: c.source, unrelated: false }, created: Date.now(), done: false };
+        if (!state.media[id]) state.media[id] = { id, ...m, priority: urgent(c.text), parent: { url: c.url, title: c.title, published: c.published, source: c.source, unrelated: false }, created: Date.now(), done: false };
       }
     }
     return this.enqueue(state, c);
@@ -213,8 +214,9 @@ export class Vigilante {
     const token = this.env.OCR_DISPATCH_TOKEN;
     const now = Date.now();
     if (!token || !Object.values(state.media).some(canReadMedia)) return;
-    const lastActivity = Math.max(state.ocrDispatch?.attempted || 0, Date.parse(state.ocrLastSeen || '') || 0);
-    if (now - lastActivity < 10 * 60000) return;
+    const lastActivity = state.ocrDispatch?.attempted || 0;
+    const fresh = Object.values(state.media).some(m => canReadMedia(m) && m.created > lastActivity);
+    if (now - lastActivity < (fresh ? 1 : 10) * 60000) return;
     state.ocrDispatch = { attempted: now, error: null };
     await this.save(state);
     try {
@@ -240,9 +242,9 @@ export class Vigilante {
       if (item.next > now) continue;
       // Persist the outbox before external side effects; an acknowledged send is saved immediately.
       await this.save(state);
-      const sent = await sendTelegram(this.env, item.candidate.system || message(item.candidate, result));
+      const sent = await sendTelegram(this.env, item.candidate.probeId ? 'PRUEBA EBNMZ: imagen L-327 le?da correctamente. Simulaci?n sin corte real.' : item.candidate.system || message(item.candidate, result));
       state.telegram = { lastAttempt: now, error: sent.ok ? null : sent.error, next: sent.ok ? now + 1100 : now + sent.retry * 1000 };
-      if (sent.ok) { state.sent[key] = { at: now, url: item.candidate.url, messageId: sent.messageId }; delete state.queue[key]; }
+      if (sent.ok) { state.sent[key] = { at: Date.now(), published: item.candidate.published, detected: item.candidate.detected ?? item.created, ocrFinished: item.candidate.ocrFinished, probe: Boolean(item.candidate.probeId), url: item.candidate.url, messageId: sent.messageId }; delete state.queue[key]; }
       else { item.attempts++; item.uncertain = !!sent.uncertain; item.next = Math.max(state.telegram.next, now + Math.min(3600000, 60000 * 2 ** Math.min(item.attempts, 6))); }
       await this.save(state);
       break; // A single chat never receives a burst of messages.
@@ -283,6 +285,12 @@ export class Vigilante {
     try { await this.collect(state); state.lastError = null; }
     catch { state.lastError = 'falló la recolección; revisar estado de fuentes'; }
     this.prune(state);
+    const overdue = Object.values(state.media).filter(m => !m.probe && canReadMedia(m) && (m.priority ?? urgent(m.parent.title)) && Date.now() - m.created >= 600000);
+    if (!overdue.length) state.ocrDelayNotified = false;
+    if (overdue.length && !state.ocrDelayNotified && /^[1-9]\d*$/.test(this.env.TELEGRAM_CHAT_ID || '')) {
+      const notice = await sendTelegram(this.env, 'EBNMZ: una imagen prioritaria lleva al menos 10 minutos esperando lectura.');
+      state.ocrDelayNotified = notice.ok || Boolean(notice.uncertain);
+    }
     const issues = this.health(state);
     const signature = issues.join('\n');
     const diagnosticsEnabled = this.env.NOTIFY_DIAGNOSTICS === 'true';
@@ -309,7 +317,7 @@ export class Vigilante {
   }
   status(state) {
     const media = Object.values(state.media);
-    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ type: key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, obscuraSample: state.obscuraSample || null, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.OCR_DISPATCH_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
+    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ published: v.published, detected: v.detected, ocrFinished: v.ocrFinished, type: v.probe ? 'test' : key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, obscuraSample: state.obscuraSample || null, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.OCR_DISPATCH_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
   }
   async fetch(request) {
     const { pathname: path, searchParams } = new URL(request.url);
@@ -319,7 +327,7 @@ export class Vigilante {
       const state = await this.load();
       const limit = Math.min(48, Math.max(1, Number(searchParams.get('limit')) || 12));
       const items = Object.values(state.media).filter(canReadMedia)
-        .sort((a, b) => (a.attempts || 0) - (b.attempts || 0) || a.created - b.created);
+        .sort((a, b) => Number(Boolean(b.priority ?? urgent(b.parent.title))) - Number(Boolean(a.priority ?? urgent(a.parent.title))) || (a.attempts || 0) - (b.attempts || 0) || a.created - b.created);
       return json({ items: items.slice(0, limit) });
     }
     if (this.busy) return json({ error: 'revisión en curso' }, 409);
@@ -344,7 +352,7 @@ export class Vigilante {
         let unreadable = 0;
         for (const u of units) {
           if (u.confidence < 55 || u.text.trim().length < 10) { unreadable++; results.push({ accepted: false, reason: 'página ilegible' }); continue; }
-          results.push(await this.enqueue(state, { ...m.parent, text: u.text, ocr: true, media: [] }));
+          results.push(await this.enqueue(state, { ...m.parent, detected: m.created, ocrFinished: Date.now(), text: u.text, ocr: true, media: [] }));
         }
         const result = { accepted: results.some(r => r.accepted), pages: results };
         if (unreadable) { m.error = `OCR parcial: ${unreadable} páginas requieren revisión`; m.attempts = (m.attempts || 0) + 1; result.reason = m.error; result.needs_review = true; }
@@ -353,6 +361,16 @@ export class Vigilante {
         await this.save(state);
         await this.deliver(state);
         return json(result);
+      }
+      if (path === '/test-ocr') {
+        const now = Date.now();
+        if (now - (state.lastProbe || 0) < 600000) return json({ error: 'prueba reciente' }, 429);
+        const id = 'probe-' + now;
+        state.lastProbe = now;
+        state.media[id] = { id, probe: true, priority: true, created: now, done: false, parent: { probeId: id, published: new Date(now).toISOString(), title: 'Prueba OCR', source: 'prueba' } };
+        await this.save(state);
+        await this.dispatchOcr(state);
+        return json({ id, dispatch: state.ocrDispatch });
       }
       if (path === '/test-alert') {
         if (Date.now() - (state.lastTest || 0) < 60000) return json({ error: 'esperá un minuto' }, 429);
@@ -374,7 +392,7 @@ export default {
     if (path === '/' && request.method === 'GET') return json({ service: 'L327-vigilante', version: 2 });
     if (!env.ADMIN_TOKEN || request.headers.get('authorization') !== `Bearer ${env.ADMIN_TOKEN}`) return json({ error: 'no autorizado' }, 401);
     if (!env.VIGILANTE) return json({ error: 'falta binding VIGILANTE' }, 503);
-    const routes = { '/status': 'GET', '/media': 'GET', '/run': 'POST', '/ingest': 'POST', '/test-alert': 'POST' };
+    const routes = { '/status': 'GET', '/media': 'GET', '/run': 'POST', '/ingest': 'POST', '/test-alert': 'POST', '/test-ocr': 'POST' };
     if (!routes[path]) return json({ error: 'ruta inexistente' }, 404);
     if (request.method !== routes[path]) return json({ error: 'método no permitido' }, 405);
     if (Number(request.headers.get('content-length') || 0) > 200000) return json({ error: 'cuerpo demasiado grande' }, 413);
