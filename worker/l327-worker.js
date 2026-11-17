@@ -211,7 +211,7 @@ export class Vigilante {
     return issues;
   }
   async dispatchOcr(state) {
-    const token = this.env.OCR_DISPATCH_TOKEN;
+    const token = this.env.EBNMZ_OCR_TOKEN;
     const now = Date.now();
     if (!token || !Object.values(state.media).some(canReadMedia)) return;
     const lastActivity = state.ocrDispatch?.attempted || 0;
@@ -317,7 +317,7 @@ export class Vigilante {
   }
   status(state) {
     const media = Object.values(state.media);
-    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ published: v.published, detected: v.detected, ocrFinished: v.ocrFinished, type: v.probe ? 'test' : key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, obscuraSample: state.obscuraSample || null, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.OCR_DISPATCH_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
+    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ published: v.published, detected: v.detected, ocrFinished: v.ocrFinished, type: v.probe ? 'test' : key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, obscuraSample: state.obscuraSample || null, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.EBNMZ_OCR_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
   }
   async fetch(request) {
     const { pathname: path, searchParams } = new URL(request.url);

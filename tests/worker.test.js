@@ -122,7 +122,7 @@ test('OCR retira fotos de visitas y conserva las que acompañan un aviso eléctr
   assert.equal(bot.status(state).mediaReview, 0);
 });
 test('OCR pide una ejecución para archivos procesables y limita los reintentos', async t => {
-  const { bot } = instance({ OCR_DISPATCH_TOKEN: 'fake' });
+  const { bot } = instance({ EBNMZ_OCR_TOKEN: 'fake' });
   const state = await bot.load();
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async (url, options) => {
