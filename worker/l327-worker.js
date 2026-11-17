@@ -11,7 +11,12 @@ export const SOURCES = [
 ];
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 const blank = () => ({ version: 2, sent: {}, queue: {}, media: {}, sources: {}, articles: {}, warnings: {}, lastRun: 0, telegram: {} });
-const canReadMedia = m => !m.done && m.parent.unrelated !== true && (m.attempts || 0) < 3;
+const canReadMedia = m => !m.done && m.parent.unrelated !== true && (m.nextOcr || 0) <= Date.now();
+function retryMedia(m) {
+  m.attempts = (m.attempts || 0) + 1;
+  const minutes = [5, 30, 120, 360, 720];
+  m.nextOcr = Date.now() + minutes[Math.min(m.attempts - 1, minutes.length - 1)] * 60000;
+}
 const urgent = text => /\b(?:interrupcion(?:es)?|mantenimientos?|circuitos?|cortes?|suspension)\b/.test(normalize(text));
 export async function readText(response, max = MAX_BODY) {
   const reader = response.body?.getReader();
@@ -317,7 +322,7 @@ export class Vigilante {
   }
   status(state) {
     const media = Object.values(state.media);
-    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ published: v.published, detected: v.detected, ocrFinished: v.ocrFinished, type: v.probe ? 'test' : key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, obscuraSample: state.obscuraSample || null, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.EBNMZ_OCR_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
+    return { circuit: 'L-327 / SIS-L327', diagnosticNotifications: this.env.NOTIFY_DIAGNOSTICS === 'true', recentDeliveries: Object.entries(state.sent).sort((a,b)=>b[1].at-a[1].at).slice(0,20).map(([key,v])=>({ published: v.published, detected: v.detected, ocrFinished: v.ocrFinished, type: v.probe ? 'test' : key.startsWith('health-') ? 'diagnostic' : 'outage', at: new Date(v.at).toISOString(), url: v.url || null })), lastRun: state.lastRun ? new Date(state.lastRun).toISOString() : null, sources: state.sources, obscuraSample: state.obscuraSample || null, pending: Object.keys(state.queue).length, mediaPending: media.filter(canReadMedia).length, mediaRetryScheduled: media.filter(m => !m.done && m.nextOcr > Date.now()).length, mediaReview: media.filter(m => !m.done && (m.attempts || 0) >= 3).length, mediaErrors: Object.values(state.media).filter(m => m.error && !m.done).slice(0, 12).map(m => ({ id: m.id, url: m.url, error: m.error, attempts: m.attempts })), sent: Object.keys(state.sent).length, telegram: state.telegram, issues: this.health(state), lastError: state.lastError || null, ocrLastSeen: state.ocrLastSeen || null, ocrDispatch: { enabled: Boolean(this.env.EBNMZ_OCR_TOKEN), ...state.ocrDispatch }, articles: Object.values(state.articles).map(a => ({ url: a.url, error: a.error || null, published: a.published || null, checked: a.checked })) };
   }
   async fetch(request) {
     const { pathname: path, searchParams } = new URL(request.url);
@@ -327,7 +332,7 @@ export class Vigilante {
       const state = await this.load();
       const limit = Math.min(48, Math.max(1, Number(searchParams.get('limit')) || 12));
       const items = Object.values(state.media).filter(canReadMedia)
-        .sort((a, b) => Number(Boolean(b.priority ?? urgent(b.parent.title))) - Number(Boolean(a.priority ?? urgent(a.parent.title))) || (a.attempts || 0) - (b.attempts || 0) || a.created - b.created);
+        .sort((a, b) => Number(Boolean(a.attempts)) - Number(Boolean(b.attempts)) || Number(Boolean(b.priority ?? urgent(b.parent.title))) - Number(Boolean(a.priority ?? urgent(a.parent.title))) || (a.attempts || 0) - (b.attempts || 0) || a.created - b.created);
       return json({ items: items.slice(0, limit) });
     }
     if (this.busy) return json({ error: 'revisión en curso' }, 409);
@@ -342,10 +347,10 @@ export class Vigilante {
         const m = state.media[data.id];
         if (m.done) return json({ accepted: false, reason: 'ya procesado' });
         state.ocrLastSeen = new Date().toISOString();
-        if (data.error) { m.error = String(data.error).slice(0, 120); m.attempts = (m.attempts || 0) + 1; await this.save(state); return json({ accepted: false, reason: 'OCR pendiente' }); }
+        if (data.error) { m.error = String(data.error).slice(0, 120); retryMedia(m); await this.save(state); return json({ accepted: false, reason: 'OCR pendiente' }); }
         // No title concatenation: a broad weekly heading must not supply another image's circuit/date.
         if (!units.length || units.every(u => u.confidence < 55 || u.text.trim().length < 10)) {
-          m.error = 'OCR vacío o de baja confianza; requiere revisión'; m.reviewRequired = true; m.attempts = (m.attempts || 0) + 1;
+          m.error = 'OCR vacío o de baja confianza; requiere revisión'; m.reviewRequired = true; retryMedia(m);
           await this.save(state); return json({ accepted: false, needs_review: true, reason: m.error });
         }
         const results = [];
@@ -355,7 +360,7 @@ export class Vigilante {
           results.push(await this.enqueue(state, { ...m.parent, detected: m.created, ocrFinished: Date.now(), text: u.text, ocr: true, media: [] }));
         }
         const result = { accepted: results.some(r => r.accepted), pages: results };
-        if (unreadable) { m.error = `OCR parcial: ${unreadable} páginas requieren revisión`; m.attempts = (m.attempts || 0) + 1; result.reason = m.error; result.needs_review = true; }
+        if (unreadable) { m.error = `OCR parcial: ${unreadable} páginas requieren revisión`; retryMedia(m); result.reason = m.error; result.needs_review = true; }
         m.reviewRequired = unreadable > 0;
         m.done = unreadable === 0; m.result = result; m.processed = Date.now();
         await this.save(state);

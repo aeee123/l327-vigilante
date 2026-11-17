@@ -131,10 +131,11 @@ test('OCR pide una ejecución para archivos procesables y limita los reintentos'
     calls++;
     return new Response(null, { status: 204 });
   });
-  state.media.a = { parent: {}, attempts: 3 };
+  state.media.a = { parent: {}, attempts: 3, nextOcr: Date.now() + 60000 };
   await bot.dispatchOcr(state);
   assert.equal(calls, 0);
-  state.media.b = { parent: {} };
+  // Existing exhausted items without a retry date are immediately eligible.
+  delete state.media.a.nextOcr;
   await bot.dispatchOcr(state);
   await bot.dispatchOcr(state);
   assert.equal(calls, 1);
