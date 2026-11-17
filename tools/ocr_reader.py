@@ -158,6 +158,20 @@ def api(base, token, path, payload=None):
             time.sleep(min(10, 2 ** (attempt + 1)))
 
 
+def probe_image():
+    from datetime import datetime, timedelta, timezone
+    from PIL import Image, ImageDraw, ImageFont
+    tomorrow = datetime.now(timezone(timedelta(hours=-6))) + timedelta(days=1)
+    image = Image.new("RGB", (1800, 600), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 54)
+    for index, line in enumerate(["PRUEBA EBNMZ", "Mantenimiento programado", "Circuito: L-327", tomorrow.strftime("Fecha: %d/%m/%Y")]):
+        draw.text((50, 50 + index * 115), line, font=font, fill="black")
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue(), "image"
+
+
 def main():
     base = os.environ.get("BOT_URL", "").rstrip("/")
     token = os.environ.get("ADMIN_TOKEN", "")
@@ -176,7 +190,7 @@ def main():
             break
         processed += 1
         try:
-            data, kind = download(item["url"])
+            data, kind = probe_image() if item.get("probe") else download(item["url"])
             units = extract(data, kind)
         except Exception as error:
             failures += 1
