@@ -132,6 +132,7 @@ export class Vigilante {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.busy = false; }
   async load() {
     const state = (await this.ctx.storage.get('state-v2')) || blank();
+    state.obscuraSample = await this.ctx.storage.get('obscura-sample') || state.obscuraSample;
     const active = new Set(SOURCES.map(s => s.id));
     for (const id of Object.keys(state.sources)) if (!active.has(id)) delete state.sources[id];
     return state;
@@ -269,24 +270,25 @@ export class Vigilante {
     const token = this.env.OBSCURA_SERVICE_TOKEN;
     const checked = Date.now();
     if (!token || checked - (state.obscuraSample?.checked || 0) < 5 * 60000) return null;
-    const results = await Promise.all(SOURCES.filter(source => source.type === 'x').map(async source => {
+    const snapshots = { ...state.obscuraSample?.sources };
+    const source = SOURCES.filter(s => s.type === 'x').sort((a, b) => (snapshots[a.id]?.checked || 0) - (snapshots[b.id]?.checked || 0))[0];
+    {
       const previous = state.obscuraSample?.sources[source.id];
       const start = Date.now();
       try {
         const sample = await downloadObscura(source, previous, token);
-        return [source.id, { ms: Date.now() - start, obscuraSeen: sample.obscuraSeen,
-          newest: [previous?.newest, sample.candidates[0]?.published].filter(Boolean).sort().at(-1) || null }];
+        snapshots[source.id] = { checked, ms: Date.now() - start, obscuraSeen: sample.obscuraSeen,
+          newest: [previous?.newest, sample.candidates[0]?.published].filter(Boolean).sort().at(-1) || null };
       } catch (error) {
-        return [source.id, { ...previous, ms: Date.now() - start, error: error.message }];
+        snapshots[source.id] = { ...previous, checked, ms: Date.now() - start, error: error.message };
       }
-    }));
-    return { checked, sources: Object.fromEntries(results) };
+    }
+    return { checked, sources: snapshots };
   }
   async run(state) {
     if (Date.now() - state.lastRun < 45000) return { skipped: 'revisión reciente' };
     state.lastRun = Date.now();
     await this.save(state);
-    const obscuraSample = this.sampleObscura(state);
     try { await this.collect(state); state.lastError = null; }
     catch { state.lastError = 'falló la recolección; revisar estado de fuentes'; }
     this.prune(state);
@@ -313,11 +315,6 @@ export class Vigilante {
     await this.save(state);
     await this.deliver(state);
     await this.dispatchOcr(state);
-    const sample = await obscuraSample;
-    if (sample) {
-      state.obscuraSample = sample;
-      await this.save(state);
-    }
     return this.status(state);
   }
   status(state) {
@@ -327,6 +324,11 @@ export class Vigilante {
   async fetch(request) {
     const { pathname: path, searchParams } = new URL(request.url);
     // Read-only diagnostics must remain available while a collection is running.
+    if (path === '/sample') {
+      const sample = await this.sampleObscura(await this.load());
+      if (sample) await this.ctx.storage.put('obscura-sample', sample);
+      return json({ checked: sample?.checked });
+    }
     if (path === '/status') return json(this.status(await this.load()));
     if (path === '/media') {
       const state = await this.load();
@@ -390,6 +392,7 @@ export class Vigilante {
 function stub(env) { return env.VIGILANTE.get(env.VIGILANTE.idFromName('L327-v2')); }
 export default {
   async scheduled(event, env, ctx) {
+    ctx.waitUntil(stub(env).fetch('https://internal/sample', { method: 'POST' }));
     ctx.waitUntil(stub(env).fetch('https://internal/run', { method: 'POST' }).then(async r => { if (!r.ok && r.status !== 409) throw Error(`revisión ${r.status}`); console.log('L327', await r.text()); }));
   },
   async fetch(request, env) {

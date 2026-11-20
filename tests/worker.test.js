@@ -15,7 +15,8 @@ test('el envío empieza aunque Obscura todavía no termine', async () => {
   bot.sampleObscura = () => sample.promise;
   bot.collect = async state => { await bot.enqueue(state, candidate()); };
   bot.deliver = async state => delivered.resolve(Object.keys(state.queue).length);
-  const run = bot.run(state);
+  const sampling = bot.fetch(new Request('https://internal/sample'));
+  const run = bot.fetch(new Request('https://internal/run'));
   let timeout;
   try {
     const count = await Promise.race([delivered.promise, new Promise((_, reject) => {
@@ -25,7 +26,7 @@ test('el envío empieza aunque Obscura todavía no termine', async () => {
   } finally {
     clearTimeout(timeout);
     sample.resolve({ checked: Date.now(), sources: {} });
-    await run;
+    await Promise.all([run, sampling]);
   }
 });
 test('rutas que envían exigen autorización y método', async () => {
