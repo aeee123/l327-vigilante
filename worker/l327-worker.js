@@ -1,4 +1,6 @@
 import { DAY, normalize, classify, digest, articleLinks, article, tweets, fxTweets, message, safeUrl, unrelatedPost } from './core.js';
+import { dates, CIRCUIT } from './core.js';
+import { evaluateGemini } from './gemini.js';
 
 const UA = 'L327-Vigilante/2.0 (+monitor de avisos publicos ENEE)';
 const MAX_BODY = 2 * 1024 * 1024;
@@ -139,11 +141,41 @@ export class Vigilante {
   }
   async save(state) { await this.ctx.storage.put('state-v2', state); }
   async enqueue(state, candidate) {
+    if (this.env.GEMINI_API_KEY) return this.enqueueGemini(state, candidate);
     const result = classify(candidate);
     if (!result.relevant) return { accepted: false, reason: result.reason };
     const key = candidate.probeId || await digest(normalize(candidate.text));
     if (state.sent[key] || state.queue[key]) return { accepted: false, reason: 'duplicado' };
     state.queue[key] = { candidate, attempts: 0, next: 0, created: Date.now() };
+    return { accepted: true };
+  }
+  async enqueueGemini(state, candidate) {
+    const now = Date.now();
+    const published = Date.parse(candidate.published);
+    state.geminiSince ??= now;
+    if (!Number.isFinite(published) || published < state.geminiSince || published > now + 60000 || now - published > DAY)
+      return { accepted: false, reason: 'fuera de la ventana de publicaciones nuevas' };
+    const text = normalize(candidate.text);
+    if (!CIRCUIT.test(text) && !/\btoronjal (?:ii|2)\b/.test(text)) return { accepted: false, reason: 'sin objetivo legible' };
+    const key = candidate.probeId || await digest(text);
+    if (state.sent[key] || state.queue[key]) return { accepted: false, reason: 'duplicado' };
+    state.gemini ??= {};
+    const seen = state.gemini[key];
+    if (seen && (!seen.retry || seen.retry > now)) return { accepted: false, reason: seen.decision };
+    let verdict;
+    try {
+      verdict = await evaluateGemini([{text: candidate.text}], candidate.text, this.env.GEMINI_API_KEY);
+    } catch (error) {
+      state.gemini[key] = { at: now, decision: 'pendiente', retry: now + 5 * 60000, candidate };
+      state.geminiError = String(error.message).slice(0,100);
+      return { accepted: false, reason: 'reintento Gemini pendiente' };
+    }
+    state.geminiError = null;
+    state.gemini[key] = { at: now, decision: verdict.decision, url: candidate.url, evidencia: verdict.evidencia };
+    if (verdict.decision !== 'alertar') return { accepted: false, reason: verdict.decision };
+    const eventDates = dates(candidate.text, now, published);
+    if (eventDates.length && eventDates.every(d => d.days < 0 || d.days > 30)) return { accepted: false, reason: 'fuera de vigencia' };
+    state.queue[key] = { candidate, evidence: verdict.evidencia, attempts: 0, next: 0, created: now };
     return { accepted: true };
   }
   async consider(state, c) {
@@ -243,12 +275,14 @@ export class Vigilante {
     if (state.telegram.next > now) return;
     for (const [key, item] of Object.entries(state.queue).sort((a, b) => a[1].created - b[1].created)) {
       if (item.candidate.system && this.env.NOTIFY_DIAGNOSTICS !== 'true') { delete state.queue[key]; continue; }
-      const result = item.candidate.system ? null : classify(item.candidate);
+      const result = item.candidate.system || item.evidence ? null : classify(item.candidate);
+      if (item.evidence && now - Date.parse(item.candidate.published) > DAY) { delete state.queue[key]; continue; }
       if (now - item.created > 7 * DAY || (result && !result.relevant)) { delete state.queue[key]; continue; }
       if (item.next > now) continue;
       // Persist the outbox before external side effects; an acknowledged send is saved immediately.
       await this.save(state);
-      const sent = await sendTelegram(this.env, item.candidate.probeId ? 'PRUEBA EBNMZ: imagen L-327 procesada correctamente. Este mensaje es una prueba.' : item.candidate.system || message(item.candidate, result));
+      const alertText = item.evidence && ['⚡ Aviso oficial · ' + (CIRCUIT.test(normalize(item.evidence)) ? 'L-327' : 'El Toronjal II'), item.evidence.slice(0, 2500), item.candidate.url].join('\n');
+      const sent = await sendTelegram(this.env, item.candidate.probeId?.startsWith('gemini-probe-') ? 'PRUEBA EBNMZ: Gemini confirmó el aviso simulado de El Toronjal II.' : item.candidate.probeId ? 'PRUEBA EBNMZ: imagen L-327 procesada correctamente. Este mensaje es una prueba.' : item.candidate.system || alertText || message(item.candidate, result));
       state.telegram = { lastAttempt: now, error: sent.ok ? null : sent.error, next: sent.ok ? now + 1100 : now + sent.retry * 1000 };
       if (sent.ok) { state.sent[key] = { at: Date.now(), published: item.candidate.published, detected: item.candidate.detected ?? item.created, ocrFinished: item.candidate.ocrFinished, probe: Boolean(item.candidate.probeId), url: item.candidate.url, messageId: sent.messageId }; delete state.queue[key]; }
       else { item.attempts++; item.uncertain = !!sent.uncertain; item.next = Math.max(state.telegram.next, now + Math.min(3600000, 60000 * 2 ** Math.min(item.attempts, 6))); }
@@ -258,6 +292,7 @@ export class Vigilante {
   }
   prune(state) {
     const now = Date.now();
+    for (const [key, entry] of Object.entries(state.gemini || {})) if (now - (Date.parse(entry.candidate?.published) || entry.at) > DAY * 2) delete state.gemini[key];
     for (const m of Object.values(state.media)) if (!m.done && (m.parent.unrelated === true || (m.parent.unrelated === undefined && unrelatedPost(m.parent.title)))) {
       m.done = true; m.processed = now; m.reviewRequired = false; m.result = { accepted: false, reason: 'publicación institucional sin aviso de corte eléctrico' }; delete m.error;
     }
@@ -288,10 +323,13 @@ export class Vigilante {
   async run(state) {
     if (Date.now() - state.lastRun < 45000) return { skipped: 'revisión reciente' };
     state.lastRun = Date.now();
+    if (this.env.GEMINI_API_KEY) state.geminiSince ??= state.lastRun;
     await this.save(state);
     try { await this.collect(state); state.lastError = null; }
     catch { state.lastError = 'falló la recolección; revisar estado de fuentes'; }
     this.prune(state);
+    const retry = Object.values(state.gemini || {}).find(e => e.retry <= Date.now() && Date.now() - Date.parse(e.candidate.published) <= DAY);
+    if (retry) await this.enqueueGemini(state, retry.candidate);
     const overdue = Object.values(state.media).filter(m => !m.probe && canReadMedia(m) && (m.priority ?? urgent(m.parent.title)) && Date.now() - m.created >= 600000);
     if (!overdue.length) state.ocrDelayNotified = false;
     if (overdue.length && !state.ocrDelayNotified && /^[1-9]\d*$/.test(this.env.TELEGRAM_CHAT_ID || '')) {
@@ -342,6 +380,18 @@ export class Vigilante {
     try {
       const state = await this.load();
       if (path === '/run') return json(await this.run(state));
+      if (path === '/test-gemini') {
+        if (!this.env.GEMINI_API_KEY) return json({ error: 'Gemini sin configurar' }, 503);
+        const now = Date.now();
+        if (now - (state.lastGeminiProbe || 0) < 600000) return json({ error: 'prueba reciente' }, 429);
+        state.lastGeminiProbe = now;
+        state.geminiSince ??= now;
+        const id = 'gemini-probe-' + now;
+        const result = await this.enqueueGemini(state, { probeId: id, text: 'El Toronjal II quedará sin energía de 8 a 12 por mantenimiento.', published: new Date(now).toISOString(), detected: now });
+        await this.save(state);
+        await this.deliver(state);
+        return json({ id, result, sent: Boolean(state.sent[id]) });
+      }
       if (path === '/ingest') {
         const data = JSON.parse(await readText(request, 200000));
         const units = Array.isArray(data.units) ? data.units : [{ text: data.text, confidence: data.confidence ?? 100 }];
@@ -401,6 +451,7 @@ export default {
     if (!env.ADMIN_TOKEN || request.headers.get('authorization') !== `Bearer ${env.ADMIN_TOKEN}`) return json({ error: 'no autorizado' }, 401);
     if (!env.VIGILANTE) return json({ error: 'falta binding VIGILANTE' }, 503);
     const routes = { '/status': 'GET', '/media': 'GET', '/run': 'POST', '/ingest': 'POST', '/test-alert': 'POST', '/test-ocr': 'POST' };
+    routes['/test-gemini'] = 'POST';
     if (!routes[path]) return json({ error: 'ruta inexistente' }, 404);
     if (request.method !== routes[path]) return json({ error: 'método no permitido' }, 405);
     if (Number(request.headers.get('content-length') || 0) > 200000) return json({ error: 'cuerpo demasiado grande' }, 413);
