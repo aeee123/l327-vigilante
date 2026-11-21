@@ -1,10 +1,13 @@
 import { DAY, normalize, classify, digest, articleLinks, article, tweets, fxTweets, message, safeUrl, unrelatedPost } from './core.js';
-import { dates, CIRCUIT } from './core.js';
+import { dates, rss } from './core.js';
+import { targetLabel } from '../tools/gemini-rules.mjs';
 import { evaluateGemini } from './gemini.js';
 
 const UA = 'L327-Vigilante/2.0 (+monitor de avisos publicos ENEE)';
 const MAX_BODY = 2 * 1024 * 1024;
 export const SOURCES = [
+  { id: 'hch', type: 'rss', name: 'HCH', url: 'https://hch.tv/feed/', interval: 60000 },
+  { id: 'proceso', type: 'rss', name: 'Proceso Digital', url: 'https://proceso.hn/feed/', interval: 60000 },
   { id: 'enee-1', type: 'html', url: 'https://www.eneeutcd.hn/es/inoticias/listar/G2/249/1/mantenimientos-programados/', interval: 60000 },
   { id: 'enee-2', type: 'html', url: 'https://www.eneeutcd.hn/es/inoticias/listar/G2/249/2/mantenimientos-programados/', interval: 300000 },
   // The cron runs once a minute. Allow modest scheduling jitter.
@@ -156,7 +159,7 @@ export class Vigilante {
     if (!Number.isFinite(published) || published < state.geminiSince || published > now + 60000 || now - published > DAY)
       return { accepted: false, reason: 'fuera de la ventana de publicaciones nuevas' };
     const text = normalize(candidate.text);
-    if (!CIRCUIT.test(text) && !/\btoronjal (?:ii|2)\b/.test(text)) return { accepted: false, reason: 'sin objetivo legible' };
+    if (!targetLabel(text)) return { accepted: false, reason: 'sin objetivo legible' };
     const key = candidate.probeId || await digest(text);
     if (state.sent[key] || state.queue[key]) return { accepted: false, reason: 'duplicado' };
     state.gemini ??= {};
@@ -202,6 +205,13 @@ export class Vigilante {
       const previous = state.sources[source.id];
       try {
         if (source.type === 'x') return { source, ...await downloadTimeline(source) };
+        if (source.type === 'rss') {
+          const response = await download(source.url, previous);
+          const candidates = response.unchanged ? [] : rss(response.text).filter(c => new URL(c.url).hostname === new URL(source.url).hostname)
+            .map(c => ({ ...c, published: new Date(Date.parse(c.published)).toISOString(), source: source.name, press: true }));
+          if (!response.unchanged && !candidates.length) throw Error('RSS sin entradas válidas');
+          return { source, response, candidates, reader: 'rss' };
+        }
         return { source, response: await download(source.url, previous) };
       }
       catch (e) { return { source, error: e.message }; }
@@ -281,7 +291,7 @@ export class Vigilante {
       if (item.next > now) continue;
       // Persist the outbox before external side effects; an acknowledged send is saved immediately.
       await this.save(state);
-      const alertText = item.evidence && ['⚡ Aviso oficial · ' + (CIRCUIT.test(normalize(item.evidence)) ? 'L-327' : 'El Toronjal II'), item.evidence.slice(0, 2500), item.candidate.url].join('\n');
+      const alertText = item.evidence && ['⚡ ' + (item.candidate.press ? 'Reporte de ' + item.candidate.source : 'Aviso oficial') + ' · ' + targetLabel(item.evidence), item.evidence.slice(0, 2500), item.candidate.url].join('\n');
       const sent = await sendTelegram(this.env, item.candidate.probeId?.startsWith('gemini-probe-') ? 'PRUEBA EBNMZ: Gemini confirmó el aviso simulado de El Toronjal II.' : item.candidate.probeId ? 'PRUEBA EBNMZ: imagen L-327 procesada correctamente. Este mensaje es una prueba.' : item.candidate.system || alertText || message(item.candidate, result));
       state.telegram = { lastAttempt: now, error: sent.ok ? null : sent.error, next: sent.ok ? now + 1100 : now + sent.retry * 1000 };
       if (sent.ok) { state.sent[key] = { at: Date.now(), published: item.candidate.published, detected: item.candidate.detected ?? item.created, ocrFinished: item.candidate.ocrFinished, probe: Boolean(item.candidate.probeId), url: item.candidate.url, messageId: sent.messageId }; delete state.queue[key]; }

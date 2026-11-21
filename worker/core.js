@@ -110,7 +110,7 @@ export function rss(html) {
   const entries = [];
   const tag = (s, name) => decode(s.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i'))?.[1] || '').trim();
   for (const m of html.matchAll(/<(item|entry)\b[^>]*>([\s\S]*?)<\/\1>/gi)) {
-    const b = m[2], title = clean(tag(b, 'title')), desc = clean(tag(b, 'description') || tag(b, 'summary') || tag(b, 'content'));
+    const b = m[2], title = clean(tag(b, 'title')), desc = clean(tag(b, 'content:encoded') || tag(b, 'description') || tag(b, 'summary') || tag(b, 'content'));
     const url = safeUrl(tag(b, 'link') || b.match(/<link[^>]*href=["']([^"']+)["']/i)?.[1]);
     const published = tag(b, 'pubDate') || tag(b, 'published') || tag(b, 'updated');
     if (url && published) entries.push({ title, text: `${title} ${desc}`, url, published, media: [], source: 'RSS' });

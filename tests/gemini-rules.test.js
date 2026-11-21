@@ -5,6 +5,10 @@ import { validateDecision } from '../tools/gemini-rules.mjs';
 for (const [text, quote, expected] of [
   ['El Toronjal II estará sin luz.', 'El Toronjal II estará sin luz.', 'alertar'],
   ['Falla en SIS-L327.', 'Falla en SIS-L327.', 'alertar'],
+  ['SIS 328 quedará sin energía.', 'SIS 328 quedará sin energía.', 'alertar'],
+  ['Falla en SIS-L328.', 'Falla en SIS-L328.', 'alertar'],
+  ['L-328 sin energía. L-327 opera normalmente.', 'L-328 sin energía.', 'alertar'],
+  ['Falla en SIS-3280.', 'Falla en SIS-3280.', 'revisar'],
   ['El Toronjal I estará sin luz.', 'El Toronjal I estará sin luz.', 'revisar'],
   ['No se suspenderá el servicio del L-327.', 'se suspenderá el servicio del L-327', 'revisar'],
   ['L-328 sin energía. L-327 opera normalmente.', 'L-327 opera normalmente.', 'revisar'],
